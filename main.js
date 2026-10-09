@@ -1,6 +1,8 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 
 let mainWindow;
 
@@ -29,107 +31,178 @@ app.on('window-all-closed', function () {
     if (process.platform !== 'darwin') app.quit();
 });
 
-ipcMain.handle('extract-frontend', async (event, url) => {
+ipcMain.handle('open-folder', async (event, folderPath) => {
+    shell.showItemInFolder(folderPath);
+});
+
+ipcMain.handle('extract-frontend', async (event, config) => {
+    const { url, outDirBase } = config;
     let offscreenWindow = null;
-    const sendLog = (msg) => event.sender.send('log', msg, 'info');
+    const sendLog = (msg, type='info') => event.sender.send('log', msg, type);
     
     try {
+        const domain = new URL(url).hostname;
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const outDir = path.join(outDirBase, `clone_${domain}_${timestamp}`);
+        
+        fs.mkdirSync(path.join(outDir, 'css'), { recursive: true });
+        fs.mkdirSync(path.join(outDir, 'assets'), { recursive: true });
+
         sendLog('오프스크린 브라우저 초기화 중...');
         offscreenWindow = new BrowserWindow({
             show: false,
-            webPreferences: {
-                offscreen: true,
-                nodeIntegration: false,
-                contextIsolation: true
-            }
+            webPreferences: { offscreen: true, nodeIntegration: false, contextIsolation: true }
         });
 
         sendLog(`타겟 URL 로딩 시작: ${url}`);
-        await offscreenWindow.loadURL(url);
+        await offscreenWindow.loadURL(url, { waitUntil: 'domcontentloaded' });
         
-        sendLog('디자인 토큰(색상 빈도수, 폰트) 추출 중...');
-        const tokens = await offscreenWindow.webContents.executeJavaScript(`
+        sendLog('추가 리소스 로딩 대기 중 (3초)...');
+        await new Promise(r => setTimeout(r, 3000));
+        
+        sendLog('DOM 스냅샷 및 에셋 매핑 스크립트 실행 중...');
+        const pageData = await offscreenWindow.webContents.executeJavaScript(`
             (() => {
                 const colorMap = {};
+                const spacingMap = {};
                 const fonts = new Set();
                 const sections = [];
                 const components = [];
-                const scripts = [];
                 
-                // 1. 색상 및 폰트 추출
                 document.querySelectorAll('*').forEach(el => {
                     const s = window.getComputedStyle(el);
                     
                     const bg = s.backgroundColor;
-                    if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
-                        colorMap[bg] = (colorMap[bg] || 0) + 1;
-                    }
+                    if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') colorMap[bg] = (colorMap[bg] || 0) + 1;
                     
                     const c = s.color;
-                    if (c && c !== 'rgba(0, 0, 0, 0)' && c !== 'transparent') {
-                        colorMap[c] = (colorMap[c] || 0) + 1;
-                    }
+                    if (c && c !== 'rgba(0, 0, 0, 0)' && c !== 'transparent') colorMap[c] = (colorMap[c] || 0) + 1;
                     
-                    if (s.fontFamily) {
-                        fonts.add(s.fontFamily.split(',')[0].replace(/['"]/g, '').trim());
-                    }
+                    if (s.fontFamily) fonts.add(s.fontFamily.split(',')[0].replace(/['"]/g, '').trim());
+
+                    ['marginTop', 'marginBottom', 'paddingTop', 'paddingBottom'].forEach(prop => {
+                        if (s[prop] && s[prop] !== '0px') spacingMap[s[prop]] = (spacingMap[s[prop]] || 0) + 1;
+                    });
                 });
                 
-                const sortedColors = Object.entries(colorMap)
-                    .sort((a, b) => b[1] - a[1])
-                    .map(e => e[0]);
+                const colors = Object.entries(colorMap).sort((a, b) => b[1] - a[1]).map(e => e[0]);
+                const spacing = Object.entries(spacingMap).sort((a, b) => b[1] - a[1]).map(e => e[0]);
                     
-                // 2. 레이아웃 구조 추출
                 document.querySelectorAll('header, nav, main, section, article, aside, footer').forEach(el => {
-                    sections.push({
-                        tag: el.tagName.toLowerCase(),
-                        className: el.className,
-                        id: el.id
-                    });
+                    sections.push({ tag: el.tagName.toLowerCase(), className: el.className });
                 });
                 
-                // 3. 컴포넌트 인벤토리 추출
                 document.querySelectorAll('button, input, textarea, select, table, form').forEach(el => {
-                    components.push({
-                        type: el.tagName.toLowerCase(),
-                        inputType: el.type || null
+                    components.push({ type: el.tagName.toLowerCase() });
+                });
+
+                document.querySelectorAll('script, iframe, noscript').forEach(s => s.remove());
+                const iter = document.createNodeIterator(document, NodeFilter.SHOW_COMMENT, null, false);
+                let node;
+                const comments = [];
+                while(node = iter.nextNode()) comments.push(node);
+                comments.forEach(c => c.remove());
+
+                document.querySelectorAll('*').forEach(el => {
+                    if(!el.attributes) return;
+                    Array.from(el.attributes).forEach(attr => {
+                        if(attr.name.startsWith('on')) el.removeAttribute(attr.name);
                     });
                 });
-                
-                // 4. 로직 요약 추출
-                document.querySelectorAll('script').forEach(el => {
-                    if(el.src) scripts.push(el.src);
+
+                const assetUrls = [];
+                let assetId = 0;
+
+                document.querySelectorAll('link[rel="stylesheet"]').forEach(el => {
+                    if (el.href && !el.href.startsWith('data:')) {
+                        const localPath = 'css/style-' + (assetId++) + '.css';
+                        assetUrls.push({ url: el.href, localPath, type: 'css' });
+                        el.href = localPath;
+                    }
                 });
-                
+
+                document.querySelectorAll('img, source').forEach(el => {
+                    if (el.src && !el.src.startsWith('data:')) {
+                        const ext = el.src.split('.').pop().split('?')[0] || 'png';
+                        const safeExt = /^[a-zA-Z0-9]+$/.test(ext) ? ext : 'png';
+                        const localPath = 'assets/img-' + (assetId++) + '.' + safeExt;
+                        assetUrls.push({ url: el.src, localPath, type: 'asset' });
+                        el.src = localPath;
+                    }
+                    if (el.srcset) el.removeAttribute('srcset');
+                });
+
+                document.querySelectorAll('style').forEach(el => {
+                    const localPath = 'css/inline-' + (assetId++) + '.css';
+                    assetUrls.push({ text: el.innerHTML, localPath, type: 'inline-css' });
+                    const link = document.createElement('link');
+                    link.rel = 'stylesheet';
+                    link.href = localPath;
+                    el.replaceWith(link);
+                });
+
                 return {
-                    tokens: {
-                        colors: sortedColors,
-                        fonts: Array.from(fonts),
-                        spacing: ['8px', '16px', '24px'] // 휴리스틱 더미
-                    },
+                    html: document.documentElement.outerHTML,
+                    assetUrls,
+                    tokens: { colors, fonts: Array.from(fonts), spacing },
                     layout: { sections },
                     components,
-                    scripts,
                     elementCount: document.querySelectorAll('*').length
                 };
             })();
         `);
 
-        sendLog('레이아웃 구조 및 컴포넌트 분석 완료...');
+        sendLog('레이아웃 구조 및 에셋 매핑 완료...');
         
-        if (offscreenWindow && !offscreenWindow.isDestroyed()) {
-            offscreenWindow.destroy();
+        if (offscreenWindow && !offscreenWindow.isDestroyed()) offscreenWindow.destroy();
+
+        fs.writeFileSync(path.join(outDir, 'index.html'), '<!DOCTYPE html>\n<html>\n' + pageData.html + '\n</html>');
+        
+        sendLog(`총 ${pageData.assetUrls.length}개 에셋/CSS 다운로드 시작... (동시성 5 제한)`);
+
+        const failedAssets = [];
+        const assets = [];
+
+        async function processQueue(items, limit) {
+            let i = 0;
+            const exec = async () => {
+                while (i < items.length) {
+                    const item = items[i++];
+                    try {
+                        if (item.type === 'inline-css') {
+                            fs.writeFileSync(path.join(outDir, item.localPath), item.text);
+                        } else {
+                            const res = await fetch(item.url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+                            if (!res.ok) throw new Error(res.statusText);
+                            const buffer = Buffer.from(await res.arrayBuffer());
+                            fs.writeFileSync(path.join(outDir, item.localPath), buffer);
+                        }
+                        assets.push(item);
+                        sendLog(`[다운로드 성공] ${item.localPath}`);
+                    } catch (e) {
+                        failedAssets.push({ url: item.url, error: e.message });
+                        sendLog(`[다운로드 실패] ${item.url} - ${e.message}`, 'error');
+                    }
+                }
+            };
+            await Promise.all(Array.from({ length: limit }).map(exec));
         }
+
+        await processQueue(pageData.assetUrls, 5);
+
+        const manifest = { targetUrl: url, extractedAt: new Date().toISOString(), assets, failedAssets };
+        fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+        fs.writeFileSync(path.join(outDir, 'README.md'), `# Clone of ${domain}\n\nOpen \`index.html\` to view the cloned structure.`);
+
+        sendLog('클론 프로젝트 조립 완료!');
 
         return { 
             success: true, 
-            message: `[추출 완료] ${url} 구조 분석 성공`, 
-            data: tokens 
+            message: `[추출 완료] ${url} 구조 분석 및 클론 성공`, 
+            data: { ...pageData.tokens, assets, failedAssets, clonePath: outDir }
         };
     } catch (error) {
-        if (offscreenWindow && !offscreenWindow.isDestroyed()) {
-            offscreenWindow.destroy();
-        }
+        if (offscreenWindow && !offscreenWindow.isDestroyed()) offscreenWindow.destroy();
         return { success: false, message: error.message };
     }
 });
@@ -146,9 +219,7 @@ ipcMain.handle('scaffold-backend', async (event, config) => {
             version: "1.1.0",
             description: "GJC Reverse Engineered E-commerce Backend (Secure)",
             main: "server.js",
-            scripts: {
-                start: "node server.js"
-            },
+            scripts: { start: "node server.js" },
             dependencies: {
                 "express": "^4.18.2",
                 "better-sqlite3": "^9.4.3",
@@ -172,7 +243,6 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-// verbose: console.log 제거 (보안 하드닝)
 const db = new Database('shop.db');
 
 db.exec(\`
@@ -232,12 +302,10 @@ db.exec(\`
   );
 \`);
 
-// 목업 데이터 및 Admin 계정 해싱 시드 삽입
 const count = db.prepare('SELECT COUNT(*) as count FROM Admin').get();
 if (count.count === 0) {
     const adminId = '${config.adminId}';
     const adminPw = '${config.adminPw}';
-    // Admin 비밀번호 bcrypt 해싱 적용
     const hash = bcrypt.hashSync(adminPw, 10);
     db.prepare('INSERT INTO Admin (username, password_hash) VALUES (?, ?)').run(adminId, hash);
     
@@ -245,7 +313,6 @@ if (count.count === 0) {
     db.prepare('INSERT INTO PriceRule (product_id, option_key, price) VALUES (?, ?, ?)').run(1, 'Color', 50);
 }
 
-// ==== Public API ====
 app.get('/api/products', (req, res) => {
     const products = db.prepare('SELECT * FROM Product WHERE status="active"').all();
     res.json(products);
@@ -268,7 +335,11 @@ app.post('/api/orders', (req, res) => {
     res.json({ success: true, orderId: info.lastInsertRowid, totalAmount: total });
 });
 
-// ==== Admin Security Middleware ====
+app.get('/api/orders/:id', (req, res) => {
+    const order = db.prepare('SELECT * FROM Orders WHERE id = ?').get(req.params.id);
+    res.json(order || {});
+});
+
 const SECRET = 'super_secret_jwt_key';
 
 const authenticateToken = (req, res, next) => {
@@ -298,7 +369,6 @@ app.post('/api/admin/login', (req, res) => {
 
 app.use('/api/admin', authenticateToken);
 
-// ==== Protected Admin API ====
 app.get('/api/admin/orders', (req, res) => {
     const orders = db.prepare('SELECT * FROM Orders ORDER BY created_at DESC').all();
     res.json(orders);

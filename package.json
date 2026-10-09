@@ -1,14 +1,30 @@
 {
   "name": "gjc-reversing-workbench",
-  "version": "1.0.0",
-  "description": "GJC 리버싱 워크벤치 - 프론트엔드 추출 및 백엔드 스캐폴딩",
+  "version": "2.0.0",
+  "description": "GJC Reverse Engineering Workbench",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "dist": "electron-builder --publish never"
   },
   "author": "GJC Agent",
   "license": "ISC",
   "devDependencies": {
-    "electron": "^44.7.0"
+    "electron": "^29.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.gjc.reversing.workbench",
+    "productName": "GJC 리버싱 워크벤치",
+    "win": {
+      "target": [
+        "nsis",
+        "dir"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

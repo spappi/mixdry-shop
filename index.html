@@ -2,17 +2,18 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <title>GJC 리버싱 워크벤치 v1.1</title>
+    <title>GJC 리버싱 워크벤치 v2.0</title>
     <link rel="stylesheet" href="style.css">
     <style>
         dialog { resize: both; overflow: auto; min-width: 400px; min-height: 300px; }
         .details-panel { background: #1a1a1a; padding: 10px; margin-top: 10px; border-radius: 4px; font-size: 13px; }
         summary { cursor: pointer; font-weight: bold; color: var(--accent-color); margin-bottom: 5px; }
+        .open-folder-btn { background-color: #607d8b; margin-top: 10px; display: none; }
     </style>
 </head>
 <body>
     <nav>
-        <button class="tab-btn active" data-target="tab-extract">프론트 추출</button>
+        <button class="tab-btn active" data-target="tab-extract">프론트 추출 (Deep Clone)</button>
         <button class="tab-btn" data-target="tab-scaffold">백엔드 생성</button>
         <div class="header-actions">
             <button class="icon-btn" id="btn-settings">⚙ 설정</button>
@@ -21,13 +22,14 @@
 
     <main>
         <div id="tab-extract" class="tab-content active">
-            <h2>웹 디자인 및 구조 추출</h2>
-            <p style="color:#aaa; margin-bottom:20px; font-size:13px;">URL을 입력하면 Web-Cloner 엔진이 디자인 토큰, 컴포넌트, 로직 요약을 리버싱합니다.</p>
+            <h2>웹 구조 완벽 추출 및 클론</h2>
+            <p style="color:#aaa; margin-bottom:20px; font-size:13px;">URL을 입력하면 에셋(에셋, CSS) 다운로드 및 DOM 변형을 포함한 완벽한 정적 클론을 로컬에 저장합니다.</p>
             <div class="form-group">
                 <label>타겟 쇼핑몰 URL</label>
                 <input type="url" id="extract-url" placeholder="https://example.com" value="https://example.com">
             </div>
             <button class="primary-btn" id="btn-run-extract">추출 시작</button>
+            <button class="primary-btn open-folder-btn" id="btn-open-clone-folder">출력 폴더 열기</button>
             <div class="result-panel" id="extract-result">추출 대기 중...</div>
         </div>
 
@@ -49,6 +51,7 @@
                 </div>
             </div>
             <button class="primary-btn" id="btn-run-scaffold">백엔드 생성</button>
+            <button class="primary-btn open-folder-btn" id="btn-open-scaffold-folder">출력 폴더 열기</button>
             <div class="result-panel" id="scaffold-result">생성 대기 중...</div>
         </div>
     </main>
