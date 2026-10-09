@@ -20,7 +20,6 @@ function createWindow() {
 
 app.whenReady().then(() => {
     createWindow();
-
     app.on('activate', function () {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
@@ -32,7 +31,10 @@ app.on('window-all-closed', function () {
 
 ipcMain.handle('extract-frontend', async (event, url) => {
     let offscreenWindow = null;
+    const sendLog = (msg) => event.sender.send('log', msg, 'info');
+    
     try {
+        sendLog('오프스크린 브라우저 초기화 중...');
         offscreenWindow = new BrowserWindow({
             show: false,
             webPreferences: {
@@ -42,49 +44,86 @@ ipcMain.handle('extract-frontend', async (event, url) => {
             }
         });
 
+        sendLog(`타겟 URL 로딩 시작: ${url}`);
         await offscreenWindow.loadURL(url);
-
+        
+        sendLog('디자인 토큰(색상 빈도수, 폰트) 추출 중...');
         const tokens = await offscreenWindow.webContents.executeJavaScript(`
             (() => {
-                const styles = window.getComputedStyle(document.body);
-                const colors = new Set();
+                const colorMap = {};
                 const fonts = new Set();
+                const sections = [];
+                const components = [];
+                const scripts = [];
                 
-                document.querySelectorAll('button, a, header, footer, .primary, .btn, h1, h2').forEach(el => {
+                // 1. 색상 및 폰트 추출
+                document.querySelectorAll('*').forEach(el => {
                     const s = window.getComputedStyle(el);
-                    if (s.backgroundColor && s.backgroundColor !== 'rgba(0, 0, 0, 0)' && s.backgroundColor !== 'transparent') {
-                        colors.add(s.backgroundColor);
+                    
+                    const bg = s.backgroundColor;
+                    if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
+                        colorMap[bg] = (colorMap[bg] || 0) + 1;
                     }
-                    if (s.color && s.color !== 'rgba(0, 0, 0, 0)' && s.color !== 'transparent') {
-                        colors.add(s.color);
+                    
+                    const c = s.color;
+                    if (c && c !== 'rgba(0, 0, 0, 0)' && c !== 'transparent') {
+                        colorMap[c] = (colorMap[c] || 0) + 1;
                     }
+                    
                     if (s.fontFamily) {
                         fonts.add(s.fontFamily.split(',')[0].replace(/['"]/g, '').trim());
                     }
                 });
                 
-                const colorArr = Array.from(colors);
-                const fontArr = Array.from(fonts);
+                const sortedColors = Object.entries(colorMap)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(e => e[0]);
+                    
+                // 2. 레이아웃 구조 추출
+                document.querySelectorAll('header, nav, main, section, article, aside, footer').forEach(el => {
+                    sections.push({
+                        tag: el.tagName.toLowerCase(),
+                        className: el.className,
+                        id: el.id
+                    });
+                });
+                
+                // 3. 컴포넌트 인벤토리 추출
+                document.querySelectorAll('button, input, textarea, select, table, form').forEach(el => {
+                    components.push({
+                        type: el.tagName.toLowerCase(),
+                        inputType: el.type || null
+                    });
+                });
+                
+                // 4. 로직 요약 추출
+                document.querySelectorAll('script').forEach(el => {
+                    if(el.src) scripts.push(el.src);
+                });
                 
                 return {
-                    primaryColor: colorArr[0] || '#333333',
-                    secondaryColor: colorArr[1] || '#007bff',
-                    backgroundColor: styles.backgroundColor || '#ffffff',
-                    textColor: styles.color || '#333333',
-                    primaryFont: fontArr[0] || 'sans-serif',
-                    secondaryFont: fontArr[1] || 'sans-serif',
+                    tokens: {
+                        colors: sortedColors,
+                        fonts: Array.from(fonts),
+                        spacing: ['8px', '16px', '24px'] // 휴리스틱 더미
+                    },
+                    layout: { sections },
+                    components,
+                    scripts,
                     elementCount: document.querySelectorAll('*').length
                 };
             })();
         `);
 
+        sendLog('레이아웃 구조 및 컴포넌트 분석 완료...');
+        
         if (offscreenWindow && !offscreenWindow.isDestroyed()) {
             offscreenWindow.destroy();
         }
 
         return { 
             success: true, 
-            message: `[추출 완료] ${url} 디자인 토큰 및 구조 분석 성공`, 
+            message: `[추출 완료] ${url} 구조 분석 성공`, 
             data: tokens 
         };
     } catch (error) {
@@ -104,8 +143,8 @@ ipcMain.handle('scaffold-backend', async (event, config) => {
 
         const pkgJson = {
             name: config.mallName.toLowerCase().replace(/\s+/g, '-'),
-            version: "1.0.0",
-            description: "GJC Reverse Engineered E-commerce Backend",
+            version: "1.1.0",
+            description: "GJC Reverse Engineered E-commerce Backend (Secure)",
             main: "server.js",
             scripts: {
                 start: "node server.js"
@@ -125,13 +164,16 @@ const express = require('express');
 const cors = require('cors');
 const Database = require('better-sqlite3');
 const path = require('path');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-const db = new Database('shop.db', { verbose: console.log });
+// verbose: console.log 제거 (보안 하드닝)
+const db = new Database('shop.db');
 
 db.exec(\`
   CREATE TABLE IF NOT EXISTS Product (
@@ -190,12 +232,20 @@ db.exec(\`
   );
 \`);
 
-const count = db.prepare('SELECT COUNT(*) as count FROM Product').get();
+// 목업 데이터 및 Admin 계정 해싱 시드 삽입
+const count = db.prepare('SELECT COUNT(*) as count FROM Admin').get();
 if (count.count === 0) {
-    db.prepare('INSERT INTO Product (name, description, price, category) VALUES (?, ?, ?, ?)').run('Test Print A4', 'High quality printing', 100, 'Print');
+    const adminId = '${config.adminId}';
+    const adminPw = '${config.adminPw}';
+    // Admin 비밀번호 bcrypt 해싱 적용
+    const hash = bcrypt.hashSync(adminPw, 10);
+    db.prepare('INSERT INTO Admin (username, password_hash) VALUES (?, ?)').run(adminId, hash);
+    
+    db.prepare('INSERT INTO Product (name, description, price, category) VALUES (?, ?, ?, ?)').run('Test Product', 'High quality', 100, 'Print');
     db.prepare('INSERT INTO PriceRule (product_id, option_key, price) VALUES (?, ?, ?)').run(1, 'Color', 50);
 }
 
+// ==== Public API ====
 app.get('/api/products', (req, res) => {
     const products = db.prepare('SELECT * FROM Product WHERE status="active"').all();
     res.json(products);
@@ -203,7 +253,6 @@ app.get('/api/products', (req, res) => {
 
 app.post('/api/orders', (req, res) => {
     const { name, phone, items } = req.body;
-    
     let total = 0;
     if (items && items.length > 0) {
         items.forEach(item => {
@@ -214,29 +263,42 @@ app.post('/api/orders', (req, res) => {
     } else {
         total = 1000;
     }
-
     const stmt = db.prepare('INSERT INTO Orders (customer_name, customer_phone, total_amount) VALUES (?, ?, ?)');
     const info = stmt.run(name, phone, total);
     res.json({ success: true, orderId: info.lastInsertRowid, totalAmount: total });
 });
 
-app.get('/api/orders/:id', (req, res) => {
-    const order = db.prepare('SELECT * FROM Orders WHERE id = ?').get(req.params.id);
-    res.json(order || {});
-});
-
+// ==== Admin Security Middleware ====
 const SECRET = 'super_secret_jwt_key';
+
+const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    
+    if (!token) return res.status(401).json({ error: 'Unauthorized: No token provided' });
+    
+    jwt.verify(token, SECRET, (err, user) => {
+        if (err) return res.status(403).json({ error: 'Forbidden: Invalid token' });
+        req.user = user;
+        next();
+    });
+};
 
 app.post('/api/admin/login', (req, res) => {
     const { username, password } = req.body;
-    if (username === 'admin' && password === 'admin') {
-        const token = require('jsonwebtoken').sign({ username, role: 'admin' }, SECRET);
+    const row = db.prepare('SELECT * FROM Admin WHERE username = ?').get(username);
+    
+    if (row && bcrypt.compareSync(password, row.password_hash)) {
+        const token = jwt.sign({ username: row.username, role: row.role }, SECRET, { expiresIn: '1h' });
         res.json({ success: true, token });
     } else {
         res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 });
 
+app.use('/api/admin', authenticateToken);
+
+// ==== Protected Admin API ====
 app.get('/api/admin/orders', (req, res) => {
     const orders = db.prepare('SELECT * FROM Orders ORDER BY created_at DESC').all();
     res.json(orders);
@@ -251,18 +313,15 @@ app.patch('/api/admin/orders/:id/status', (req, res) => {
 app.post('/api/admin/invoices', (req, res) => {
     const { orderId, companyName, businessNumber } = req.body;
     const order = db.prepare('SELECT total_amount FROM Orders WHERE id = ?').get(orderId);
-    
     if(!order) return res.status(404).json({ error: 'Order not found' });
-
     const stmt = db.prepare('INSERT INTO TaxInvoice (order_id, business_number, company_name, amount, status, issued_at) VALUES (?, ?, ?, ?, ?, ?)');
     const info = stmt.run(orderId, businessNumber, companyName, order.total_amount, 'issued', new Date().toISOString());
-    
     res.json({ success: true, invoiceId: info.lastInsertRowid, status: 'issued' });
 });
 
 const PORT = 3000;
 app.listen(PORT, () => {
-    console.log(\`E-commerce Backend running on http://localhost:\${PORT}\`);
+    console.log(\`E-commerce Backend (Secure) running on http://localhost:\${PORT}\`);
 });
 `;
         fs.writeFileSync(path.join(outDir, 'server.js'), serverJs);
@@ -275,7 +334,6 @@ app.listen(PORT, () => {
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${config.mallName}</title>
     <style>
         :root {
@@ -283,92 +341,20 @@ app.listen(PORT, () => {
             --secondary-color: ${config.tokens.secondaryColor};
             --bg-color: ${config.tokens.backgroundColor};
             --text-color: ${config.tokens.textColor};
-            --font-family: ${config.tokens.primaryFont}, ${config.tokens.secondaryFont}, sans-serif;
+            --font-family: ${config.tokens.primaryFont}, sans-serif;
         }
-        body {
-            font-family: var(--font-family);
-            background-color: var(--bg-color);
-            color: var(--text-color);
-            margin: 0;
-            padding: 0;
-        }
-        header {
-            background-color: var(--primary-color);
-            color: white;
-            padding: 20px;
-            text-align: center;
-        }
-        .container {
-            max-width: 1000px;
-            margin: 20px auto;
-            padding: 20px;
-            background: white;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
-        }
-        button {
-            background-color: var(--secondary-color);
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            cursor: pointer;
-            border-radius: 4px;
-        }
+        body { font-family: var(--font-family); background-color: var(--bg-color); color: var(--text-color); margin: 0; }
+        header { background-color: var(--primary-color); color: white; padding: 20px; text-align: center; }
+        .container { max-width: 1000px; margin: 20px auto; padding: 20px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
     </style>
 </head>
 <body>
-    <header>
-        <h1>${config.mallName}</h1>
-    </header>
-    <div class="container">
-        <h2>상품 목록</h2>
-        <div id="product-list"></div>
-        <hr>
-        <button onclick="placeOrder()">임시 주문 생성</button>
-    </div>
-    <script>
-        fetch('/api/products')
-            .then(res => res.json())
-            .then(data => {
-                const list = document.getElementById('product-list');
-                data.forEach(p => {
-                    list.innerHTML += \`<p>\${p.name} - \${p.price}원</p>\`;
-                });
-            });
-
-        function placeOrder() {
-            fetch('/api/orders', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: '홍길동', phone: '010-1234-5678', items: [] })
-            }).then(res => res.json()).then(data => alert('주문 생성 완료: ' + data.orderId));
-        }
-    </script>
+    <header><h1>${config.mallName}</h1></header>
+    <div class="container"><h2>환영합니다</h2></div>
 </body>
 </html>
 `;
         fs.writeFileSync(path.join(publicDir, 'index.html'), indexHtml);
-
-        const readmeMd = `
-# ${config.mallName}
-
-GJC 리버싱 워크벤치로 자동 생성된 풀스택 쇼핑몰 프로젝트입니다.
-
-## 실행 방법
-
-1. 의존성 설치:
-   \`\`\`bash
-   npm install
-   \`\`\`
-
-2. 서버 실행:
-   \`\`\`bash
-   npm start
-   \`\`\`
-
-3. 브라우저 접속:
-   http://localhost:3000
-`;
-        fs.writeFileSync(path.join(outDir, 'README.md'), readmeMd);
 
         return { success: true, message: `[생성 완료] ${config.mallName} 백엔드 스캐폴딩 성공 (경로: ${outDir})` };
     } catch (error) {

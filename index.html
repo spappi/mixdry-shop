@@ -2,8 +2,13 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <title>GJC 리버싱 워크벤치</title>
+    <title>GJC 리버싱 워크벤치 v1.1</title>
     <link rel="stylesheet" href="style.css">
+    <style>
+        dialog { resize: both; overflow: auto; min-width: 400px; min-height: 300px; }
+        .details-panel { background: #1a1a1a; padding: 10px; margin-top: 10px; border-radius: 4px; font-size: 13px; }
+        summary { cursor: pointer; font-weight: bold; color: var(--accent-color); margin-bottom: 5px; }
+    </style>
 </head>
 <body>
     <nav>
@@ -15,38 +20,39 @@
     </nav>
 
     <main>
-        <!-- 탭 1: 프론트 추출 -->
         <div id="tab-extract" class="tab-content active">
             <h2>웹 디자인 및 구조 추출</h2>
-            <p style="color:#aaa; margin-bottom:20px; font-size:13px;">URL을 입력하면 Web-Cloner 엔진이 디자인 토큰과 컴포넌트 구조를 리버싱합니다.</p>
+            <p style="color:#aaa; margin-bottom:20px; font-size:13px;">URL을 입력하면 Web-Cloner 엔진이 디자인 토큰, 컴포넌트, 로직 요약을 리버싱합니다.</p>
             <div class="form-group">
                 <label>타겟 쇼핑몰 URL</label>
                 <input type="url" id="extract-url" placeholder="https://example.com" value="https://example.com">
             </div>
             <button class="primary-btn" id="btn-run-extract">추출 시작</button>
-            
             <div class="result-panel" id="extract-result">추출 대기 중...</div>
         </div>
 
-        <!-- 탭 2: 백엔드 생성 -->
         <div id="tab-scaffold" class="tab-content">
-            <h2>표준 쇼핑몰 스캐폴딩</h2>
-            <p style="color:#aaa; margin-bottom:20px; font-size:13px;">추출된 디자인 토큰을 주입하여 Express + SQLite 기반의 작동하는 쇼핑몰 백엔드를 생성합니다.</p>
+            <h2>표준 쇼핑몰 스캐폴딩 (Secure)</h2>
+            <p style="color:#aaa; margin-bottom:20px; font-size:13px;">추출된 토큰을 주입하여 JWT 인증이 적용된 Express + SQLite 백엔드를 생성합니다.</p>
             <div class="form-group">
                 <label>쇼핑몰 이름</label>
                 <input type="text" id="mall-name" placeholder="Gajae Shop" value="Gajae Shop">
             </div>
-            <div class="form-group">
-                <label>Admin ID</label>
-                <input type="text" id="admin-id" value="admin">
+            <div style="display: flex; gap: 10px;">
+                <div class="form-group" style="flex:1;">
+                    <label>Admin ID</label>
+                    <input type="text" id="admin-id" value="admin">
+                </div>
+                <div class="form-group" style="flex:1;">
+                    <label>Admin PW</label>
+                    <input type="password" id="admin-pw" value="admin123" placeholder="비밀번호 설정">
+                </div>
             </div>
             <button class="primary-btn" id="btn-run-scaffold">백엔드 생성</button>
-            
             <div class="result-panel" id="scaffold-result">생성 대기 중...</div>
         </div>
     </main>
 
-    <!-- 하단 로그 패널 -->
     <footer>
         <div class="log-header">
             <span>시스템 로그</span>
@@ -55,15 +61,26 @@
         <div id="log-container"></div>
     </footer>
 
-    <!-- 설정 모달 -->
     <dialog id="settings-modal">
         <h3>환경 설정</h3>
         <div class="form-group" style="margin-top:15px;">
+            <label>UI 줌 비율 (%) : <span id="zoom-label">70</span>%</label>
+            <input type="range" id="ui-zoom" min="50" max="150" value="70" style="width: 100%;">
+        </div>
+        <div class="form-group">
             <label>출력 폴더 경로 (Output Directory)</label>
             <input type="text" id="output-dir" value="D:/FREE-GJC/output/scaffold_mall">
         </div>
+        <div class="form-group">
+            <label>기본 쇼핑몰 이름</label>
+            <input type="text" id="def-mall-name" value="Gajae Shop">
+        </div>
+        <div class="form-group">
+            <label>기본 Admin ID</label>
+            <input type="text" id="def-admin-id" value="admin">
+        </div>
         <div class="modal-actions">
-            <button class="icon-btn" id="btn-close-settings">닫기</button>
+            <button class="icon-btn" id="btn-save-settings">저장 및 닫기</button>
         </div>
     </dialog>
 
