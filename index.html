@@ -2,40 +2,58 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <title>GJC 리버싱 워크벤치 v2.0</title>
+    <title>GJC 리버싱 워크벤치 v3.0</title>
     <link rel="stylesheet" href="style.css">
     <style>
         dialog { resize: both; overflow: auto; min-width: 400px; min-height: 300px; }
         .details-panel { background: #1a1a1a; padding: 10px; margin-top: 10px; border-radius: 4px; font-size: 13px; }
         summary { cursor: pointer; font-weight: bold; color: var(--accent-color); margin-bottom: 5px; }
         .open-folder-btn { background-color: #607d8b; margin-top: 10px; display: none; }
+        
+        /* v3 specific styles */
+        .pattern-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 15px; margin-top: 15px; }
+        .pattern-card { background: #222; border: 1px solid #444; border-radius: 6px; padding: 15px; }
+        .pattern-card h4 { margin: 0 0 10px 0; color: var(--accent-color); }
+        .tag-pill { background: #333; padding: 3px 8px; border-radius: 12px; font-size: 11px; margin-right: 5px; display: inline-block; margin-bottom: 5px; }
+        .pattern-actions { margin-top: 10px; text-align: right; }
+        
+        .packager-container { display: flex; flex-direction: column; gap: 15px; height: calc(100% - 80px); }
+        .prompt-input { flex: 1; min-height: 100px; resize: vertical; }
+        .prompt-output { flex: 2; background: #121212; color: #ddd; padding: 15px; border-radius: 4px; border: 1px solid #444; font-family: monospace; overflow-y: auto; white-space: pre-wrap; }
+        
+        .pattern-entry-form { border: 1px solid #444; padding: 10px; margin-bottom: 10px; border-radius: 4px; background: #1a1a1a; }
+        .filter-bar { display: flex; gap: 10px; margin-bottom: 15px; }
+        .filter-bar input { flex: 1; }
     </style>
 </head>
 <body>
     <nav>
-        <button class="tab-btn active" data-target="tab-extract">프론트 추출 (Deep Clone)</button>
+        <button class="tab-btn active" data-target="tab-extract">프론트 추출</button>
         <button class="tab-btn" data-target="tab-scaffold">백엔드 생성</button>
+        <button class="tab-btn" data-target="tab-library">패턴 라이브러리</button>
+        <button class="tab-btn" data-target="tab-packager">프롬프트 패키저</button>
         <div class="header-actions">
             <button class="icon-btn" id="btn-settings">⚙ 설정</button>
         </div>
     </nav>
 
     <main>
+        <!-- 탭 1: 프론트 추출 -->
         <div id="tab-extract" class="tab-content active">
             <h2>웹 구조 완벽 추출 및 클론</h2>
-            <p style="color:#aaa; margin-bottom:20px; font-size:13px;">URL을 입력하면 에셋(에셋, CSS) 다운로드 및 DOM 변형을 포함한 완벽한 정적 클론을 로컬에 저장합니다.</p>
             <div class="form-group">
                 <label>타겟 쇼핑몰 URL</label>
                 <input type="url" id="extract-url" placeholder="https://example.com" value="https://example.com">
             </div>
             <button class="primary-btn" id="btn-run-extract">추출 시작</button>
             <button class="primary-btn open-folder-btn" id="btn-open-clone-folder">출력 폴더 열기</button>
+            <button class="primary-btn open-folder-btn" id="btn-open-pattern-modal" style="background-color:#9c27b0;">패턴으로 저장</button>
             <div class="result-panel" id="extract-result">추출 대기 중...</div>
         </div>
 
+        <!-- 탭 2: 백엔드 생성 -->
         <div id="tab-scaffold" class="tab-content">
             <h2>표준 쇼핑몰 스캐폴딩 (Secure)</h2>
-            <p style="color:#aaa; margin-bottom:20px; font-size:13px;">추출된 토큰을 주입하여 JWT 인증이 적용된 Express + SQLite 백엔드를 생성합니다.</p>
             <div class="form-group">
                 <label>쇼핑몰 이름</label>
                 <input type="text" id="mall-name" placeholder="Gajae Shop" value="Gajae Shop">
@@ -54,6 +72,32 @@
             <button class="primary-btn open-folder-btn" id="btn-open-scaffold-folder">출력 폴더 열기</button>
             <div class="result-panel" id="scaffold-result">생성 대기 중...</div>
         </div>
+
+        <!-- 탭 3: 패턴 라이브러리 -->
+        <div id="tab-library" class="tab-content">
+            <h2>패턴 라이브러리</h2>
+            <div class="filter-bar">
+                <input type="text" id="filter-keyword" placeholder="태그, 사이트 도메인, 이름으로 검색...">
+                <button class="icon-btn" id="btn-refresh-patterns">새로고침</button>
+            </div>
+            <div id="pattern-list-container" class="pattern-grid">
+                <!-- Patterns will be loaded here -->
+            </div>
+        </div>
+
+        <!-- 탭 4: 프롬프트 패키저 -->
+        <div id="tab-packager" class="tab-content">
+            <h2>에이전트 프롬프트 조립기</h2>
+            <div class="packager-container">
+                <div class="form-group" style="margin:0;">
+                    <label>생성 프롬프트 입력 (키워드를 분석해 관련 패턴을 자동 첨부합니다)</label>
+                    <textarea id="prompt-input" class="prompt-input" placeholder="예: 인쇄 쇼핑몰 상품 상세 페이지 만들어줘"></textarea>
+                </div>
+                <button class="primary-btn" id="btn-generate-package">프롬프트 패키지 생성</button>
+                <div class="prompt-output" id="prompt-output-container">생성 대기 중...</div>
+                <button class="icon-btn" id="btn-copy-package" style="align-self: flex-end;">클립보드 복사</button>
+            </div>
+        </div>
     </main>
 
     <footer>
@@ -64,6 +108,7 @@
         <div id="log-container"></div>
     </footer>
 
+    <!-- 설정 모달 -->
     <dialog id="settings-modal">
         <h3>환경 설정</h3>
         <div class="form-group" style="margin-top:15px;">
@@ -75,6 +120,10 @@
             <input type="text" id="output-dir" value="D:/FREE-GJC/output/scaffold_mall">
         </div>
         <div class="form-group">
+            <label>패턴 DB 경로 (비워두면 앱 데이터 폴더 사용)</label>
+            <input type="text" id="pattern-db-path" placeholder="C:/my-patterns.db">
+        </div>
+        <div class="form-group">
             <label>기본 쇼핑몰 이름</label>
             <input type="text" id="def-mall-name" value="Gajae Shop">
         </div>
@@ -84,6 +133,21 @@
         </div>
         <div class="modal-actions">
             <button class="icon-btn" id="btn-save-settings">저장 및 닫기</button>
+        </div>
+    </dialog>
+
+    <!-- 패턴 등록 모달 -->
+    <dialog id="pattern-register-modal" style="width:600px;">
+        <h3>패턴 등록 (지식 베이스)</h3>
+        <div style="margin: 15px 0; font-size:13px; color:#aaa;">
+            추출된 데이터를 기반으로 아래 3가지 패턴을 자동 생성합니다. 필요시 요약과 태그를 수정하세요.
+        </div>
+        <div id="pattern-entries-container" style="max-height: 400px; overflow-y:auto; padding-right:10px;">
+            <!-- Dynamically populated -->
+        </div>
+        <div class="modal-actions">
+            <button class="icon-btn" id="btn-close-pattern-modal">취소</button>
+            <button class="primary-btn" id="btn-submit-pattern">패턴 DB에 저장</button>
         </div>
     </dialog>
 

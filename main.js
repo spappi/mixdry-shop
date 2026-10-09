@@ -3,13 +3,15 @@ const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const Database = require('better-sqlite3');
 
 let mainWindow;
+let patternDb = null;
 
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 1000,
-        height: 800,
+        width: 1100,
+        height: 850,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             nodeIntegration: false,
@@ -31,10 +33,121 @@ app.on('window-all-closed', function () {
     if (process.platform !== 'darwin') app.quit();
 });
 
+// v3: DB Initialization
+ipcMain.handle('init-db', async (event, customPath) => {
+    try {
+        const dbPath = customPath || path.join(app.getPath('userData'), 'patterns.db');
+        patternDb = new Database(dbPath);
+        
+        patternDb.exec(`
+            CREATE TABLE IF NOT EXISTS sites (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              url TEXT NOT NULL,
+              domain TEXT NOT NULL,
+              title TEXT,
+              captured_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              clone_dir TEXT,
+              screenshot_path TEXT
+            );
+            CREATE TABLE IF NOT EXISTS patterns (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              site_id INTEGER REFERENCES sites(id) ON DELETE CASCADE,
+              category TEXT NOT NULL,
+              name TEXT NOT NULL,
+              summary TEXT NOT NULL,
+              tags TEXT,
+              content_json TEXT NOT NULL,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        return { success: true, message: `패턴 DB 연결 성공 (${dbPath})` };
+    } catch(e) {
+        return { success: false, message: e.message };
+    }
+});
+
+// v3: Pattern DB CRUD
+ipcMain.handle('save-pattern', async (event, data) => {
+    if(!patternDb) return {success:false, message: 'DB not initialized'};
+    try {
+        const siteStmt = patternDb.prepare('INSERT INTO sites (url, domain, clone_dir) VALUES (?, ?, ?)');
+        const info = siteStmt.run(data.url, data.domain, data.cloneDir);
+        const siteId = info.lastInsertRowid;
+        
+        const patStmt = patternDb.prepare('INSERT INTO patterns (site_id, category, name, summary, tags, content_json) VALUES (?, ?, ?, ?, ?, ?)');
+        const insertMany = patternDb.transaction((patterns) => {
+            for (const p of patterns) patStmt.run(siteId, p.category, p.name, p.summary, p.tags, p.content_json);
+        });
+        insertMany(data.patterns);
+        
+        return {success: true, siteId};
+    } catch(e) { return {success: false, message: e.message}; }
+});
+
+ipcMain.handle('get-patterns', async (event, keyword) => {
+    if(!patternDb) return {success:false, message: 'DB not initialized'};
+    try {
+        let query = `SELECT p.*, s.domain, s.url FROM patterns p JOIN sites s ON p.site_id = s.id ORDER BY p.created_at DESC`;
+        let patterns = [];
+        if (keyword && keyword.trim()) {
+            const kw = `%${keyword.trim()}%`;
+            query = `SELECT p.*, s.domain, s.url FROM patterns p JOIN sites s ON p.site_id = s.id WHERE p.tags LIKE ? OR p.name LIKE ? OR s.domain LIKE ? ORDER BY p.created_at DESC`;
+            patterns = patternDb.prepare(query).all(kw, kw, kw);
+        } else {
+            patterns = patternDb.prepare(query).all();
+        }
+        return {success: true, data: patterns};
+    } catch(e) { return {success: false, message: e.message}; }
+});
+
+ipcMain.handle('search-patterns', async (event, prompt) => {
+    if(!patternDb) return {success:false, message: 'DB not initialized'};
+    try {
+        const keywords = prompt.split(/\s+/).filter(w => w.length > 1);
+        if (keywords.length === 0) return {success: true, data: []};
+        
+        const conditions = [];
+        const params = [];
+        for (const kw of keywords) {
+            conditions.push('(p.tags LIKE ? OR p.name LIKE ? OR p.summary LIKE ?)');
+            params.push(`%${kw}%`, `%${kw}%`, `%${kw}%`);
+        }
+        
+        const query = `SELECT p.*, s.domain FROM patterns p JOIN sites s ON p.site_id = s.id WHERE ${conditions.join(' OR ')}`;
+        const results = patternDb.prepare(query).all(...params);
+        
+        // Rank results
+        results.forEach(r => {
+            r._score = 0;
+            const tags = (r.tags||'').split(',').map(t=>t.trim());
+            keywords.forEach(kw => {
+                if(tags.includes(kw)) r._score += 10;
+                else if(r.tags && r.tags.includes(kw)) r._score += 5;
+                if(r.name.includes(kw)) r._score += 3;
+                if(r.summary.includes(kw)) r._score += 1;
+            });
+        });
+        results.sort((a,b) => b._score - a._score);
+        
+        // Return top 3 matches to keep context window manageable
+        return {success: true, data: results.slice(0, 3)};
+    } catch(e) { return {success: false, message: e.message}; }
+});
+
+ipcMain.handle('delete-pattern', async (event, id) => {
+    if(!patternDb) return {success:false, message: 'DB not initialized'};
+    try {
+        patternDb.prepare('DELETE FROM patterns WHERE id = ?').run(id);
+        return {success: true};
+    } catch(e) { return {success: false, message: e.message}; }
+});
+
+
 ipcMain.handle('open-folder', async (event, folderPath) => {
     shell.showItemInFolder(folderPath);
 });
 
+// v2 extraction logic (with v3 screenshot addition)
 ipcMain.handle('extract-frontend', async (event, config) => {
     const { url, outDirBase } = config;
     let offscreenWindow = null;
@@ -60,6 +173,11 @@ ipcMain.handle('extract-frontend', async (event, config) => {
         sendLog('추가 리소스 로딩 대기 중 (3초)...');
         await new Promise(r => setTimeout(r, 3000));
         
+        // v3: 스크린샷 캡처
+        sendLog('DOM 스냅샷 캡처 중...');
+        const image = await offscreenWindow.webContents.capturePage();
+        fs.writeFileSync(path.join(outDir, 'screenshot.png'), image.toPNG());
+
         sendLog('DOM 스냅샷 및 에셋 매핑 스크립트 실행 중...');
         const pageData = await offscreenWindow.webContents.executeJavaScript(`
             (() => {
