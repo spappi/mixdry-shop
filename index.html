@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>GJC 리버싱 워크벤치</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <nav>
+        <button class="tab-btn active" data-target="tab-extract">프론트 추출</button>
+        <button class="tab-btn" data-target="tab-scaffold">백엔드 생성</button>
+        <div class="header-actions">
+            <button class="icon-btn" id="btn-settings">⚙ 설정</button>
+        </div>
+    </nav>
+
+    <main>
+        <!-- 탭 1: 프론트 추출 -->
+        <div id="tab-extract" class="tab-content active">
+            <h2>웹 디자인 및 구조 추출</h2>
+            <p style="color:#aaa; margin-bottom:20px; font-size:13px;">URL을 입력하면 Web-Cloner 엔진이 디자인 토큰과 컴포넌트 구조를 리버싱합니다.</p>
+            <div class="form-group">
+                <label>타겟 쇼핑몰 URL</label>
+                <input type="url" id="extract-url" placeholder="https://example.com" value="https://example.com">
+            </div>
+            <button class="primary-btn" id="btn-run-extract">추출 시작</button>
+            
+            <div class="result-panel" id="extract-result">추출 대기 중...</div>
+        </div>
+
+        <!-- 탭 2: 백엔드 생성 -->
+        <div id="tab-scaffold" class="tab-content">
+            <h2>표준 쇼핑몰 스캐폴딩</h2>
+            <p style="color:#aaa; margin-bottom:20px; font-size:13px;">추출된 디자인 토큰을 주입하여 Express + SQLite 기반의 작동하는 쇼핑몰 백엔드를 생성합니다.</p>
+            <div class="form-group">
+                <label>쇼핑몰 이름</label>
+                <input type="text" id="mall-name" placeholder="Gajae Shop" value="Gajae Shop">
+            </div>
+            <div class="form-group">
+                <label>Admin ID</label>
+                <input type="text" id="admin-id" value="admin">
+            </div>
+            <button class="primary-btn" id="btn-run-scaffold">백엔드 생성</button>
+            
+            <div class="result-panel" id="scaffold-result">생성 대기 중...</div>
+        </div>
+    </main>
+
+    <!-- 하단 로그 패널 -->
+    <footer>
+        <div class="log-header">
+            <span>시스템 로그</span>
+            <span style="cursor:pointer;" id="btn-clear-log">지우기</span>
+        </div>
+        <div id="log-container"></div>
+    </footer>
+
+    <!-- 설정 모달 -->
+    <dialog id="settings-modal">
+        <h3>환경 설정</h3>
+        <div class="form-group" style="margin-top:15px;">
+            <label>출력 폴더 경로 (Output Directory)</label>
+            <input type="text" id="output-dir" value="D:/FREE-GJC/output/scaffold_mall">
+        </div>
+        <div class="modal-actions">
+            <button class="icon-btn" id="btn-close-settings">닫기</button>
+        </div>
+    </dialog>
+
+    <script src="renderer.js"></script>
+</body>
+</html>
