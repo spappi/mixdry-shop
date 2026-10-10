@@ -1252,7 +1252,7 @@ ipcMain.handle('extract-multi', async (event, config) => {
                             if (el.srcset) el.removeAttribute('srcset');
                         });
 
-                        const parseCssUrls = (text, isInline) => {
+                        const parseCssUrls = (text, cssDir) => {
                             const matches = text ? text.match(/url\\(['"]?(.*?)['"]?\\)/g) : null;
                             if (!matches) return text;
                             let newText = text;
@@ -1268,7 +1268,7 @@ ipcMain.handle('extract-multi', async (event, config) => {
                                         lp = 'assets/img-' + (nextImgId++) + '.' + safeExt;
                                         newAssets.push({ url: u, localPath: lp, type: 'asset' });
                                     }
-                                    const newUrl = prefix + lp;
+                                    const newUrl = (cssDir ? '../' : prefix) + lp;
                                     newText = newText.replace(m, 'url("' + newUrl + '")');
                                 } catch(e){}
                             });
@@ -1276,12 +1276,12 @@ ipcMain.handle('extract-multi', async (event, config) => {
                         };
 
                         document.querySelectorAll('*[style]').forEach(el => {
-                            const newStyle = parseCssUrls(el.getAttribute('style'), true);
+                            const newStyle = parseCssUrls(el.getAttribute('style'), false);
                             if (newStyle !== el.getAttribute('style')) el.setAttribute('style', newStyle);
                         });
 
                         document.querySelectorAll('style').forEach(el => {
-                            const parsedCss = parseCssUrls(el.innerHTML, false);
+                            const parsedCss = parseCssUrls(el.innerHTML, true);
                             const lp = 'css/inline-' + (nextInlineId++) + '.css';
                             newAssets.push({ text: parsedCss, localPath: lp, type: 'inline-css' });
                             const link = document.createElement('link');
