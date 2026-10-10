@@ -1845,6 +1845,7 @@ ipcMain.handle('repair-clone', async (e, dir) => {
 
     if (true) {
         sendLog('[인터랙션 부활] HTML 스캔 및 패치 시작...');
+        let patchStats = { toggle: 0, accordion: 0, tabs: 0, slider: 0, dropdown: 0, modal: 0 };
         try {
             fs.mkdirSync(path.join(dir, 'js'), { recursive: true });
             fs.copyFileSync(path.join(__dirname, 'lib', 'interactions.js'), path.join(dir, 'js', 'interactions.js'));
@@ -1880,7 +1881,22 @@ ipcMain.handle('repair-clone', async (e, dir) => {
                     
                     const parts = Object.entries(dCount).filter(x => x[1] > 0).map(x => `${x[0]} ${x[1]}`).join(', ');
                     sendLog(`[인터랙션 부활] ${path.relative(dir, f)}: ${parts} 적용`);
+                    
+                    Object.keys(dCount).forEach(k => {
+                        if (patchStats[k] !== undefined) patchStats[k] += dCount[k];
+                    });
                 }
+            }
+            
+            const total = Object.values(patchStats).reduce((a, b) => a + b, 0);
+            if (total > 0) {
+                const details = Object.entries(patchStats)
+                    .filter(([k, v]) => v > 0)
+                    .map(([k, v]) => `${k} ${v}`)
+                    .join(', ');
+                sendLog(`[인터랙션 부활] 패치 완료 (${details})`);
+            } else {
+                sendLog('[인터랙션 부활] 패치 완료 (새로 적용할 항목 없음)');
             }
         } catch(err) {
             sendLog(`[인터랙션 부활 에러] ${err.message}`, 'error');
