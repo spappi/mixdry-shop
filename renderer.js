@@ -86,6 +86,7 @@ document.getElementById('btn-clear-log').addEventListener('click', () => logCont
 let extractedTokens = null;
 let lastExtractPath = null;
 let lastTargetUrl = null;
+let lastScaffoldPath = null;
 
 function renderExtractResult(data) {
     const container = document.getElementById('extract-result');
@@ -317,8 +318,7 @@ document.getElementById('btn-run-scaffold').addEventListener('click', async () =
     try {
         const res = await window.api.scaffoldBackend(config);
         appendLog(res.message, 'info');
-        document.getElementById('scaffold-result').textContent = '생성 완료!
-경로: ' + config.outputDir;
+        document.getElementById('scaffold-result').textContent = '생성 완료!\\n경로: ' + config.outputDir;
         
         lastScaffoldPath = config.outputDir;
         const openBtn = document.getElementById('btn-open-scaffold-folder');
