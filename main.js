@@ -1322,8 +1322,95 @@ ipcMain.handle('extract-multi', async (event, config) => {
                             link.href = prefix + lp;
                             el.replaceWith(link);
                         });
+                        
+                        // --- v4.4 Interaction Heuristics ---
+                        let detectCounts = { toggle: 0, accordion: 0, tabs: 0, slider: 0, dropdown: 0, modal: 0 };
+                        
+                        document.querySelectorAll('a:not([href]), a[href="#"], button, [onclick], .menu-all, .hamburger, .toggle, .btn-menu').forEach(el => {
+                            if (el.hasAttribute('data-gjc-toggle')) return;
+                            const style = window.getComputedStyle(el);
+                            if (style.cursor !== 'pointer' && !el.matches('a, button, [onclick], .menu-all, .hamburger, .toggle, .btn-menu')) return;
+                            
+                            let target = el.nextElementSibling;
+                            if (!target) target = el.querySelector('ul, div');
+                            if (target && window.getComputedStyle(target).display === 'none') {
+                                el.setAttribute('data-gjc-toggle', 'true');
+                                detectCounts.toggle++;
+                            }
+                        });
+                        
+                        document.querySelectorAll('.acc-header, dt').forEach(header => {
+                            const container = header.parentElement;
+                            if (!container || container.hasAttribute('data-gjc-accordion')) return;
+                            const headers = container.querySelectorAll('.acc-header, dt');
+                            const contents = container.querySelectorAll('.acc-content, dd');
+                            if (headers.length >= 2 && contents.length >= 2) {
+                                container.setAttribute('data-gjc-accordion', 'true');
+                                detectCounts.accordion++;
+                            }
+                        });
+                        
+                        document.querySelectorAll('ul, .tab-list, .tabs').forEach(ul => {
+                            if (ul.hasAttribute('data-gjc-tabs')) return;
+                            const links = ul.querySelectorAll('a[href^="#"]');
+                            if (links.length >= 2) {
+                                let validPanels = 0;
+                                links.forEach(a => {
+                                    const id = a.getAttribute('href');
+                                    if (id && id.length > 1 && document.querySelector(id)) {
+                                        a.setAttribute('data-gjc-tab', id);
+                                        validPanels++;
+                                    }
+                                });
+                                if (validPanels >= 2) {
+                                    ul.setAttribute('data-gjc-tabs', 'true');
+                                    detectCounts.tabs++;
+                                }
+                            }
+                        });
+                        
+                        document.querySelectorAll('.swiper, .swiper-container, .slick-slider, .owl-carousel, .carousel, .slider').forEach(el => {
+                            if (!el.hasAttribute('data-gjc-slider')) {
+                                el.setAttribute('data-gjc-slider', 'true');
+                                detectCounts.slider++;
+                            }
+                        });
+                        
+                        document.querySelectorAll('.select, .dropdown, .custom-select').forEach(el => {
+                            if (!el.hasAttribute('data-gjc-dropdown')) {
+                                const ul = el.querySelector('ul');
+                                if (ul && window.getComputedStyle(ul).display === 'none') {
+                                    el.setAttribute('data-gjc-dropdown', 'true');
+                                    detectCounts.dropdown++;
+                                }
+                            }
+                        });
+                        
+                        document.querySelectorAll('.modal, .popup, .layer-popup').forEach(el => {
+                            if (!el.hasAttribute('data-gjc-modal')) {
+                                if (window.getComputedStyle(el).display === 'none') {
+                                    const closeBtn = el.querySelector('.close, .btn-close, .popup-close');
+                                    if (closeBtn) {
+                                        el.setAttribute('data-gjc-modal', 'true');
+                                        if (el.id) {
+                                            document.querySelectorAll(`a[href="#${el.id}"]`).forEach(a => {
+                                                if (!a.hasAttribute('data-gjc-modal-open')) a.setAttribute('data-gjc-modal-open', `#${el.id}`);
+                                            });
+                                        }
+                                        detectCounts.modal++;
+                                    }
+                                }
+                            }
+                        });
 
-                        document.querySelectorAll('script, iframe, noscript').forEach(s => s.remove());
+                        const hasInteractions = Object.values(detectCounts).some(v => v > 0);
+                        if (hasInteractions) {
+                            const script = document.createElement('script');
+                            script.src = prefix + 'js/interactions.js';
+                            document.body.appendChild(script);
+                        }
+
+                        document.querySelectorAll('script:not([src$="interactions.js"]), iframe, noscript').forEach(s => s.remove());
                         const iter = document.createNodeIterator(document, NodeFilter.SHOW_COMMENT, null, false);
                         let node;
                         const comments = [];
@@ -1352,15 +1439,19 @@ ipcMain.handle('extract-multi', async (event, config) => {
 
                         return {
                             html: document.documentElement.outerHTML,
-                            textContent: document.body ? document.body.innerText.replace(/\s+/g, ' ').toLowerCase() : '',
-                            newAssets, tokens, layout, components,
-                            nextCssId, nextImgId, nextInlineId
+                            newAssets,
+                            nextCssId,
+                            nextImgId,
+                            nextInlineId,
+                            textContent: document.body.textContent,
+                            tokens, layout, components,
+                            interactions: detectCounts
                         };
-                            })() };
-                        } catch (err) {
-                            return { ok: false, error: err.message, stack: err.stack };
-                        }
-                    })();
+                    })() };
+                } catch (err) {
+                    return { ok: false, error: err.message, stack: err.stack };
+                }
+            })();
                     `,
                     returnByValue: true,
                     awaitPromise: true
@@ -1375,6 +1466,19 @@ ipcMain.handle('extract-multi', async (event, config) => {
                 }
                 if (pageData && pageData.ok === true) pageData = pageData.data;
 
+                if (pageData.interactions) {
+                    const ic = pageData.interactions;
+                    let parts = [];
+                    if (ic.toggle) parts.push(`토글 ${ic.toggle}`);
+                    if (ic.accordion) parts.push(`아코디언 ${ic.accordion}`);
+                    if (ic.tabs) parts.push(`탭 ${ic.tabs}`);
+                    if (ic.slider) parts.push(`슬라이더 ${ic.slider}`);
+                    if (ic.dropdown) parts.push(`드롭다운 ${ic.dropdown}`);
+                    if (ic.modal) parts.push(`모달 ${ic.modal}`);
+                    if (parts.length > 0) {
+                        sendLog(`[인터랙션 감지] ${parts.join(', ')}`);
+                    }
+                }
                 currentPhase = 'assets';
                 nextCssId = pageData.nextCssId;
                 nextImgId = pageData.nextImgId;
@@ -1573,6 +1677,10 @@ ipcMain.handle('extract-multi', async (event, config) => {
             });
             fs.writeFileSync(path.join(outDir, 'dead-links.txt'), deadContent);
         }
+        try {
+            fs.mkdirSync(path.join(outDir, 'js'), { recursive: true });
+            fs.copyFileSync(path.join(__dirname, 'lib', 'interactions.js'), path.join(outDir, 'js', 'interactions.js'));
+        } catch(e) {}
         if (loggedFailures.size > 0) {
             sendLog(`[에셋 실패 요약] 고유 ${loggedFailures.size}개 URL 실패`, 'warn');
         }
@@ -1675,7 +1783,7 @@ ipcMain.handle('load-clone', async (e, dir) => {
     return { manifest, urlmap, assetMap };
 });
 
-ipcMain.handle('repair-clone', async (e, dir) => {
+ipcMain.handle('repair-clone', async (e, dir, reviveInteractions) => {
     const sendLog = (msg, type='info') => e.sender.send('log', msg, type);
     const assetMapPath = path.join(dir, 'assetMap.json');
     if (!fs.existsSync(assetMapPath)) {
@@ -1690,7 +1798,7 @@ ipcMain.handle('repair-clone', async (e, dir) => {
             repairList.push({ lp, url: info.url });
         }
     }
-    if (repairList.length === 0) return { success: true, repaired: 0, stillFailed: [], message: '복구할 항목이 없습니다.' };
+    if (repairList.length === 0 && !reviveInteractions) return { success: true, repaired: 0, stillFailed: [], message: '복구할 항목이 없습니다.' };
 
     const https = require('https');
     const http = require('http');
@@ -1729,6 +1837,51 @@ ipcMain.handle('repair-clone', async (e, dir) => {
         }
     }
     fs.writeFileSync(assetMapPath, JSON.stringify(am, null, 2));
+
+    if (reviveInteractions) {
+        sendLog('[인터랙션 부활] HTML 스캔 및 패치 시작...');
+        try {
+            fs.mkdirSync(path.join(dir, 'js'), { recursive: true });
+            fs.copyFileSync(path.join(__dirname, 'lib', 'interactions.js'), path.join(dir, 'js', 'interactions.js'));
+
+            const files = [];
+            const walk = (d) => {
+                const items = fs.readdirSync(d, { withFileTypes: true });
+                for (const i of items) {
+                    if (i.isDirectory()) walk(path.join(d, i.name));
+                    else if (i.name.endsWith('.html')) files.push(path.join(d, i.name));
+                }
+            };
+            walk(dir);
+
+            for (const f of files) {
+                let html = fs.readFileSync(f, 'utf8');
+                if (html.includes('data-gjc-init') || html.includes('js/interactions.js')) continue;
+
+                let dCount = { toggle: 0, accordion: 0, tabs: 0, slider: 0, dropdown: 0, modal: 0 };
+                
+                html = html.replace(/<([a-z0-9]+)[^>]*class="[^"]*\b(menu-all|hamburger|toggle|btn-menu)\b[^"]*"[^>]*>/ig, (match) => {
+                    if (match.includes('data-gjc-toggle')) return match;
+                    dCount.toggle++;
+                    return match.replace(/class="/i, 'data-gjc-toggle="true" class="');
+                });
+                
+                const hasInteractions = Object.values(dCount).some(v => v > 0);
+                if (hasInteractions) {
+                    const relativePrefix = f === path.join(dir, 'index.html') ? './' : '../';
+                    const scriptTag = `<script src="${relativePrefix}js/interactions.js"></script>\n</body>`;
+                    html = html.replace('</body>', scriptTag);
+                    fs.writeFileSync(f, html);
+                    
+                    const parts = Object.entries(dCount).filter(x => x[1] > 0).map(x => `${x[0]} ${x[1]}`).join(', ');
+                    sendLog(`[인터랙션 부활] ${path.relative(dir, f)}: ${parts} 적용`);
+                }
+            }
+        } catch(err) {
+            sendLog(`[인터랙션 부활 에러] ${err.message}`, 'error');
+        }
+    }
+
     return { success: true, repaired, stillFailed, total: repairList.length };
 });
 

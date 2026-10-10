@@ -529,7 +529,7 @@ async function loadClones() {
             return;
         }
         grid.innerHTML = '';
-        clones.forEach(c => {
+        clones.forEach((c, idx) => {
             const card = document.createElement('div');
             card.style = 'background: #1a1a1a; border: 1px solid #444; border-radius: 5px; overflow: hidden; display: flex; flex-direction: column;';
             
@@ -552,7 +552,10 @@ async function loadClones() {
                     
                     <div style="margin-top: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 5px;">
                         <button class="primary-btn" style="padding: 5px 0; font-size: 11px;" onclick="doLoadClone('${c.dir.replace(/\\/g, '\\\\')}')">이어하기</button>
-                        <button class="primary-btn" style="padding: 5px 0; font-size: 11px; background-color: #ff9800;" onclick="doRepairClone('${c.dir.replace(/\\/g, '\\\\')}')">복구</button>
+                        <div style="display:flex; align-items:center; background:#ff9800; border-radius:3px; padding-left:4px;" title="인터랙션 부활">
+                            <input type="checkbox" id="revive-${idx}" checked style="margin:0; width:12px; height:12px;">
+                            <button class="primary-btn" style="flex:1; padding: 5px 0; font-size: 11px; background-color: transparent; border:none; color:white; font-weight:bold; cursor:pointer;" onclick="doRepairClone('${c.dir.replace(/\\/g, '\\\\')}', document.getElementById('revive-${idx}').checked)">복구</button>
+                        </div>
                         <button class="icon-btn" style="padding: 5px 0; font-size: 11px;" onclick="window.api.openCloneFolder('${c.dir.replace(/\\/g, '\\\\')}')">폴더 열기</button>
                         <button class="icon-btn" style="padding: 5px 0; font-size: 11px; color: #f44336; border-color: #f44336;" onclick="doDeleteClone('${c.dir.replace(/\\/g, '\\\\')}')">삭제</button>
                     </div>
@@ -582,10 +585,10 @@ window.doLoadClone = async (dir) => {
     }
 };
 
-window.doRepairClone = async (dir) => {
-    appendLog(`[복구] ${dir} 복구 시작...`);
+window.doRepairClone = async (dir, reviveInteractions = false) => {
+    appendLog(`[복구] ${dir} 복구 시작... (인터랙션 부활: ${reviveInteractions})`);
     try {
-        const res = await window.api.repairClone(dir);
+        const res = await window.api.repairClone(dir, reviveInteractions);
         if (res.success) {
             appendLog(`[복구 완료] 복구됨: ${res.repaired}개, 여전히 실패: ${res.stillFailed.length}개`, res.stillFailed.length ? 'error' : 'info');
         } else {

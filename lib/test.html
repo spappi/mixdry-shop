@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .menu-target { display: none; background: #eee; padding: 10px; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); }
+        .modal-content { background: white; margin: 10% auto; padding: 20px; width: 50%; }
+    </style>
+</head>
+<body>
+    <button data-gjc-toggle=".menu-target">Toggle Menu</button>
+    <div class="menu-target">This is a hidden menu</div>
+    
+    <button data-gjc-modal-open="#myModal">Open Modal</button>
+    <div id="myModal" class="modal" data-gjc-modal>
+        <div class="modal-content">
+            <button class="close">X</button>
+            <p>Modal content!</p>
+        </div>
+    </div>
+    
+    <script src="interactions.js"></script>
+</body>
+</html>
