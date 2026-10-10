@@ -174,46 +174,72 @@ ipcMain.handle('extract-frontend', async (event, config) => {
         const reqOriginalUrl = new Map();
         const reqFinalUrl = new Map();
 
-        try {
-            if (offscreenWindow.webContents.debugger.isAttached()) {
-                offscreenWindow.webContents.debugger.detach();
-            }
-            offscreenWindow.webContents.debugger.attach('1.3');
-            await offscreenWindow.webContents.debugger.sendCommand('Network.enable');
-            debuggerAttached = true;
-            sendLog('디버거 부착 완료 (에셋 자동 캡처 모드)');
-        } catch (e) {
-            sendLog('디버거 부착 실패, 폴백 모드로 진행: ' + e.message, 'error');
-        }
+        let debuggerSetupPromise = null;
 
-        if (debuggerAttached) {
-            offscreenWindow.webContents.debugger.on('message', async (e, method, params) => {
+        // 1. 타겟 준비 완료(네비게이션 시작) 시점에 디버거 부착
+        offscreenWindow.webContents.once('did-start-loading', () => {
+            debuggerSetupPromise = (async () => {
                 try {
-                    if (method === 'Network.requestWillBeSent') {
-                        reqOriginalUrl.set(params.requestId, params.request.url);
-                    } else if (method === 'Network.responseReceived') {
-                        reqFinalUrl.set(params.requestId, params.response.url);
-                    } else if (method === 'Network.loadingFinished') {
-                        const requestId = params.requestId;
-                        const urls = [reqOriginalUrl.get(requestId), reqFinalUrl.get(requestId)].filter(Boolean);
-                        try {
-                            const { body, base64Encoded } = await offscreenWindow.webContents.debugger.sendCommand(
-                                'Network.getResponseBody', { requestId }
-                            );
-                            const buf = base64Encoded ? Buffer.from(body, 'base64') : Buffer.from(body, 'utf8');
-                            for (const u of urls) capturedBodies.set(u, buf);
-                        } catch (err) {
-                            // 바디 획득 불가 (data: URL, 캐시 만료 등) 무시
-                        }
-                        reqOriginalUrl.delete(requestId);
-                        reqFinalUrl.delete(requestId);
+                    if (offscreenWindow.webContents.debugger.isAttached()) {
+                        offscreenWindow.webContents.debugger.detach();
                     }
-                } catch (err) {}
-            });
-        }
+                    offscreenWindow.webContents.debugger.attach('1.3');
+                    
+                    const enableCmd = offscreenWindow.webContents.debugger.sendCommand('Network.enable');
+                    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('CDP Network.enable 타임아웃 (10초)')), 10000));
+                    
+                    // 2. Promise.race로 타임아웃 감싸기
+                    await Promise.race([enableCmd, timeout]);
+                    
+                    debuggerAttached = true;
+                    sendLog('디버거 부착 완료 (에셋 자동 캡처 모드)');
+                    
+                    offscreenWindow.webContents.debugger.on('message', async (e, method, params) => {
+                        try {
+                            if (method === 'Network.requestWillBeSent') {
+                                reqOriginalUrl.set(params.requestId, params.request.url);
+                            } else if (method === 'Network.responseReceived') {
+                                reqFinalUrl.set(params.requestId, params.response.url);
+                            } else if (method === 'Network.loadingFinished') {
+                                const requestId = params.requestId;
+                                const urls = [reqOriginalUrl.get(requestId), reqFinalUrl.get(requestId)].filter(Boolean);
+                                try {
+                                    const { body, base64Encoded } = await offscreenWindow.webContents.debugger.sendCommand(
+                                        'Network.getResponseBody', { requestId }
+                                    );
+                                    const buf = base64Encoded ? Buffer.from(body, 'base64') : Buffer.from(body, 'utf8');
+                                    for (const u of urls) capturedBodies.set(u, buf);
+                                } catch (err) {
+                                    // 무시
+                                }
+                                reqOriginalUrl.delete(requestId);
+                                reqFinalUrl.delete(requestId);
+                            }
+                        } catch (err) {}
+                    });
+                } catch (e) {
+                    sendLog('디버거 부착 실패, 폴백 모드로 진행: ' + e.message, 'error');
+                    try {
+                        if (offscreenWindow.webContents.debugger.isAttached()) {
+                            offscreenWindow.webContents.debugger.detach();
+                        }
+                    } catch(err) {}
+                }
+            })();
+        });
 
         sendLog(`타겟 URL 로딩 시작: ${url}`);
-        await offscreenWindow.loadURL(url, { waitUntil: 'domcontentloaded' });
+        
+        // 3. 로딩 시작
+        const loadPromise = offscreenWindow.loadURL(url, { waitUntil: 'domcontentloaded' });
+        
+        // DOM 트리 로드 완료 대기
+        await loadPromise;
+        
+        // 디버거 부착 프로미스가 등록되었다면 최종 결과(성공/타임아웃) 확인 대기
+        if (debuggerSetupPromise) {
+            await debuggerSetupPromise;
+        }
         
         sendLog('추가 리소스 로딩 및 바디 캡처 대기 중 (3.5초)...');
         await new Promise(r => setTimeout(r, 3500));
