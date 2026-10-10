@@ -1563,6 +1563,7 @@ ipcMain.handle('extract-multi', async (event, config) => {
                             const stubbed = stubBackendCalls(item.text);
                             
                             fs.mkdirSync(path.join(outDir, 'original', path.dirname(item.localPath)), { recursive: true });
+                            fs.mkdirSync(path.join(outDir, path.dirname(item.localPath)), { recursive: true });
                             fs.writeFileSync(path.join(outDir, 'original', item.localPath), item.text);
                             fs.writeFileSync(path.join(outDir, item.localPath), stubbed);
                             
@@ -1676,6 +1677,7 @@ ipcMain.handle('extract-multi', async (event, config) => {
                                     const stubbed = stubBackendCalls(jsText);
 
                                     fs.mkdirSync(path.join(outDir, 'original', path.dirname(item.localPath)), { recursive: true });
+                                    fs.mkdirSync(path.join(outDir, path.dirname(item.localPath)), { recursive: true });
                                     fs.writeFileSync(path.join(outDir, 'original', item.localPath), bodyData.buf);
                                     fs.writeFileSync(path.join(outDir, item.localPath), stubbed);
 
