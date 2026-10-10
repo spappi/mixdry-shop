@@ -1064,6 +1064,7 @@ ipcMain.handle('extract-multi', async (event, config) => {
     cancelRequested = false;
     try {
         if (!urls || urls.length === 0) throw new Error("추출할 URL이 없습니다.");
+        const domain = new URL(urls[0].url).hostname;
         
         let cName = cloneName || new URL(urls[0].url).hostname;
         cName = cName.replace(/[^a-zA-Z0-9가-힣_-]/g, '_').substring(0, 50);
