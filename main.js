@@ -671,6 +671,11 @@ ipcMain.handle('crawl-links', async (event, config) => {
 
         const isExcluded = (u) => {
             const s = u.toLowerCase();
+            const extMatch = s.match(/\.([a-z0-9]+)(?:[\?#]|$)/);
+            if (extMatch) {
+                const ext = extMatch[1];
+                if (['pdf', 'zip', 'rar', 'exe', 'png', 'jpg', 'jpeg', 'gif', 'svg'].includes(ext)) return true;
+            }
             return excludePatterns.some(p => p.trim() && s.includes(p.trim().toLowerCase()));
         };
 
@@ -759,9 +764,10 @@ ipcMain.handle('analyze-site', async (event, config) => {
                     offscreenWindow.webContents.debugger.attach('1.3');
                     
                     const enableCmd = offscreenWindow.webContents.debugger.sendCommand('Network.enable');
+                    const cacheCmd = offscreenWindow.webContents.debugger.sendCommand('Network.setCacheDisabled', { cacheDisabled: true });
                     const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('CDP Network.enable 타임아웃 (10초)')), 10000));
                     
-                    await Promise.race([enableCmd, timeout]);
+                    await Promise.race([Promise.all([enableCmd, cacheCmd]), timeout]);
                     
                     debuggerAttached = true;
                     sendLog('디버거 부착 완료 (API 트래픽 캡처 모드)');
@@ -880,7 +886,7 @@ ipcMain.handle('analyze-site', async (event, config) => {
                     crawlConfig: {
                         maxDepth: 2,
                         maxPages: 50,
-                        excludePatterns: ['login', 'cart', 'order', 'member', 'mypage', 'auth', 'checkout']
+                        excludePatterns: ['login', 'cart', 'member', 'mymenu', 'my_group', 'mypage', 'auth', 'board_style=view', 'write']
                     }
                 };
 
@@ -989,9 +995,10 @@ ipcMain.handle('extract-multi', async (event, config) => {
                     offscreenWindow.webContents.debugger.attach('1.3');
                     
                     const enableCmd = offscreenWindow.webContents.debugger.sendCommand('Network.enable');
+                    const cacheCmd = offscreenWindow.webContents.debugger.sendCommand('Network.setCacheDisabled', { cacheDisabled: true });
                     const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('CDP Network.enable 타임아웃 (10초)')), 10000));
                     
-                    await Promise.race([enableCmd, timeout]);
+                    await Promise.race([Promise.all([enableCmd, cacheCmd]), timeout]);
                     
                     debuggerAttached = true;
                     sendLog('전역 디버거 부착 완료 (다중 페이지 자동 캡처 모드)');
