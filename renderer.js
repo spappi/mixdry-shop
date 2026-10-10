@@ -125,6 +125,7 @@ const crawlPlanSummary = document.getElementById('crawl-plan-summary');
 const chkNavOnly = document.getElementById('chk-nav-only');
 const btnCrawl = document.getElementById('btn-crawl');
 const btnExtractMulti = document.getElementById('btn-extract-multi');
+const btnStop = document.getElementById('btn-stop-operation');
 const crawlResults = document.getElementById('crawl-results');
 const crawlStatus = document.getElementById('crawl-status');
 
@@ -223,11 +224,20 @@ if (btnOpenApiSpec) {
         if (crawlResults) crawlResults.style.display = 'none';
     });
 
+    if (btnStop) {
+        btnStop.addEventListener('click', async () => {
+            await window.api.cancelOperation();
+            appendLog('[중지 요청 전송]', 'warn');
+            btnStop.style.display = 'none';
+        });
+    }
+
     btnCrawl.addEventListener('click', async () => {
         const url = document.getElementById('extract-url').value;
         if (!url) return appendLog('URL을 입력해주세요.', 'error');
         
         btnCrawl.disabled = true;
+        if (btnStop) btnStop.style.display = 'inline-block';
         btnCrawl.textContent = '수집 중...';
         appendLog(`링크 수집 시작: ${url}...`);
         
@@ -248,12 +258,14 @@ if (btnOpenApiSpec) {
         } finally {
             btnCrawl.disabled = false;
             btnCrawl.textContent = '링크 수집';
+            if (btnStop) btnStop.style.display = 'none';
         }
     });
 
     btnExtractMulti.addEventListener('click', async () => {
         if (!collectedUrls.length) return;
         btnExtractMulti.disabled = true;
+        if (btnStop) btnStop.style.display = 'inline-block';
         btnExtractMulti.textContent = '추출 중...';
         
         const config = {
@@ -297,6 +309,7 @@ if (btnOpenApiSpec) {
         } finally {
             btnExtractMulti.disabled = false;
             btnExtractMulti.textContent = '수집된 페이지 추출 시작';
+            if (btnStop) btnStop.style.display = 'none';
         }
     });
 

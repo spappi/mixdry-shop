@@ -148,7 +148,11 @@ ipcMain.handle('open-folder', async (event, folderPath) => {
 ipcMain.handle('open-clone', async (event, folderPath) => {
     shell.openPath(path.join(folderPath, 'index.html'));
 });
-
+let cancelRequested = false;
+ipcMain.handle('cancel-operation', () => {
+    cancelRequested = true;
+    return { success: true };
+});
 // v3.2: Extraction logic with Chrome DevTools Protocol (CDP)
 ipcMain.handle('extract-frontend', async (event, config) => {
     const { url, outDirBase } = config;
@@ -650,7 +654,7 @@ ipcMain.handle('crawl-links', async (event, config) => {
     const { url, maxDepth, maxPages, excludePatterns, paramBlacklist, discoveryScope } = config;
     let offscreenWindow = null;
     const sendLog = (msg, type='info') => event.sender.send('log', msg, type);
-
+    cancelRequested = false;
     try {
         sendLog('링크 수집용 브라우저 시작...');
         offscreenWindow = new BrowserWindow({
@@ -701,7 +705,7 @@ ipcMain.handle('crawl-links', async (event, config) => {
             else excludedStats.push({ reason, pattern, count: 1 });
         };
 
-        while (queue.length > 0 && visited.size < maxPages) {
+        while (queue.length > 0 && visited.size < maxPages && !cancelRequested) {
             const current = queue.shift();
             sendLog(`[링크 수집 중] (${visited.size}개 확인됨) 깊이:${current.depth} - ${current.url}`);
             
@@ -766,7 +770,9 @@ ipcMain.handle('crawl-links', async (event, config) => {
             }
         }
 
-        if (visited.size < maxPages) {
+        if (cancelRequested) {
+            sendLog('[사용자에 의해 링크 수집이 중지됨]', 'warn');
+        } else if (visited.size < maxPages) {
             sendLog(`전체 ${results.length}개 고유 URL 수집 완료.`);
         }
         
@@ -774,6 +780,9 @@ ipcMain.handle('crawl-links', async (event, config) => {
             sendLog(`[제외] ${s.reason}: ${s.pattern} (${s.count}건)`);
         });
 
+        if (cancelRequested) {
+            return { success: true, cancelled: true, data: results, excludedStats };
+        }
         return { success: true, data: results, excludedStats };
     } catch (e) {
         return { success: false, message: e.message };
@@ -1052,7 +1061,7 @@ ipcMain.handle('extract-multi', async (event, config) => {
     let offscreenWindow = null;
     let debuggerAttached = false;
     const sendLog = (msg, type='info') => event.sender.send('log', msg, type);
-
+    cancelRequested = false;
     try {
         if (!urls || urls.length === 0) throw new Error("추출할 URL이 없습니다.");
         const domain = new URL(urls[0].url).hostname;
@@ -1145,12 +1154,19 @@ ipcMain.handle('extract-multi', async (event, config) => {
 
         const manifest = { targetUrl: urls[0].url, extractedAt: new Date().toISOString(), pages: [], failedPages: [], assets: [], duplicatePages: [] };
         const contentHashes = new Map();
+        const failedDetails = [];
 
         for (let i = 0; i < urls.length; i++) {
+            if (cancelRequested) {
+                sendLog('[사용자에 의해 추출이 중지됨]', 'warn');
+                break;
+            }
+            
             const currentUrl = urls[i].url;
             const localPath = urlMap[currentUrl];
             sendLog(`[순차 추출] (${i+1}/${urls.length}) ${currentUrl}`);
 
+            let currentPhase = 'load';
             try {
                 const loadPromise = offscreenWindow.loadURL(currentUrl, { waitUntil: 'domcontentloaded' });
                 await loadPromise;
@@ -1166,9 +1182,13 @@ ipcMain.handle('extract-multi', async (event, config) => {
                     fs.writeFileSync(path.join(outDir, 'screenshot.png'), image.toPNG());
                 }
 
-                const pageData = await offscreenWindow.webContents.executeJavaScript(`
-                    (() => {
-                        const urlMap = ${JSON.stringify(urlMap)};
+                currentPhase = 'script';
+                const evalRes = await offscreenWindow.webContents.debugger.sendCommand('Runtime.evaluate', {
+                    expression: `
+                        (() => {
+                            try {
+                                return { ok: true, data: (() => {
+                                const urlMap = ${JSON.stringify(urlMap)};
                         const paramBlacklist = ${JSON.stringify(paramBlacklist)};
                         const currentLocalPath = "${localPath}";
                         const prefix = currentLocalPath === 'index.html' ? './' : '../';
@@ -1233,11 +1253,11 @@ ipcMain.handle('extract-multi', async (event, config) => {
                         });
 
                         const parseCssUrls = (text, isInline) => {
-                            const matches = text.match(/url\(['"]?(.*?)['"]?\)/g);
+                            const matches = text ? text.match(/url\\(['"]?(.*?)['"]?\\)/g) : null;
                             if (!matches) return text;
                             let newText = text;
                             matches.forEach(m => {
-                                const inner = m.replace(/url\(['"]?/, '').replace(/['"]?\)/, '').trim();
+                                const inner = m.replace(/url\\(['"]?/, '').replace(/['"]?\\)/, '').trim();
                                 if (!inner || inner.startsWith('data:')) return;
                                 try {
                                     const u = new URL(inner, window.location.href).toString();
@@ -1303,9 +1323,26 @@ ipcMain.handle('extract-multi', async (event, config) => {
                             newAssets, tokens, layout, components,
                             nextCssId, nextImgId, nextInlineId
                         };
+                            })() };
+                        } catch (err) {
+                            return { ok: false, error: err.message, stack: err.stack };
+                        }
                     })();
-                `);
+                    `,
+                    returnByValue: true,
+                    awaitPromise: true
+                });
+                let pageData = evalRes.result.value;
+                if (evalRes.exceptionDetails) {
+                    throw new Error("Runtime.evaluate Exception: " + JSON.stringify(evalRes.exceptionDetails));
+                }
 
+                if (pageData && pageData.ok === false) {
+                    throw new Error('[페이지 스크립트 내부 에러] ' + pageData.error + '\n' + pageData.stack);
+                }
+                if (pageData && pageData.ok === true) pageData = pageData.data;
+
+                currentPhase = 'assets';
                 nextCssId = pageData.nextCssId;
                 nextImgId = pageData.nextImgId;
                 nextInlineId = pageData.nextInlineId;
@@ -1380,7 +1417,7 @@ ipcMain.handle('extract-multi', async (event, config) => {
                         sendLog(`[에셋 실패] ${item.localPath} - ${e.message}`, 'error');
                     }
                 }
-
+                currentPhase = 'write';
                 fs.writeFileSync(path.join(outDir, localPath), '<!DOCTYPE html>\n<html>\n' + pageData.html + '\n</html>');
                 manifest.pages.push(currentUrl);
                 
@@ -1390,6 +1427,14 @@ ipcMain.handle('extract-multi', async (event, config) => {
                     manifest.components = pageData.components;
                 }
             } catch (e) {
+                const failInfo = {
+                    url: currentUrl,
+                    time: new Date().toISOString(),
+                    phase: currentPhase,
+                    message: e.message,
+                    stack: e.stack || '(스택 없음)'
+                };
+                failedDetails.push(failInfo);
                 sendLog(`[페이지 실패] ${currentUrl} - ${e.message}`, 'error');
                 manifest.failedPages.push({ url: currentUrl, error: e.message });
             }
@@ -1397,6 +1442,26 @@ ipcMain.handle('extract-multi', async (event, config) => {
         fs.writeFileSync(path.join(outDir, 'urlmap.json'), JSON.stringify(urlMap, null, 2));
         fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
         fs.writeFileSync(path.join(outDir, 'README.md'), `# Multi-page Clone of ${domain}\n\nOpen \`index.html\` to view the cloned structure.\n\nTotal pages: ${manifest.pages.length}`);
+        if (failedDetails.length > 0) {
+            const logName = `error-log-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+            const logPath = path.join(outDir, logName);
+            let logContent = `# GJC 리버싱 워크벤치 에러 로그\n`;
+            logContent += `# 생성: ${new Date().toISOString()}\n`;
+            logContent += `# 대상: ${domain}\n`;
+            logContent += `# 수집: ${urls.length}개 / 성공: ${manifest.pages.length}개 / 실패: ${manifest.failedPages.length}개 / 중지됨: ${cancelRequested ? '예' : '아니오'}\n#\n`;
+            logContent += `============================================================\n`;
+            
+            failedDetails.forEach((f, idx) => {
+                logContent += `[${idx + 1}] ${f.url}\n`;
+                logContent += `    단계: ${f.phase}\n`;
+                logContent += `    시간: ${f.time}\n`;
+                logContent += `    메시지: ${f.message}\n`;
+                logContent += `    스택:\n${f.stack}\n`;
+                logContent += `------------------------------------------------------------\n`;
+            });
+            fs.writeFileSync(logPath, logContent);
+            sendLog(`[에러 로그 저장됨] ${logPath}`, 'warn');
+        }
 
         sendLog('멀티페이지 클론 순차 추출 및 조립 완료!');
 

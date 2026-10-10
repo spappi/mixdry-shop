@@ -19,5 +19,6 @@ contextBridge.exposeInMainWorld('api', {
     deletePattern: (id) => ipcRenderer.invoke('delete-pattern', id),
     updatePatternTags: (id, tags) => ipcRenderer.invoke('update-pattern-tags', id, tags),
     searchPatterns: (keywords) => ipcRenderer.invoke('search-patterns', keywords),
-    copyToClipboard: (text) => clipboard.writeText(text)
+    copyToClipboard: (text) => clipboard.writeText(text),
+    cancelOperation: () => ipcRenderer.invoke('cancel-operation')
 });
