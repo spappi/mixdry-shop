@@ -1,0 +1,14 @@
+#!/bin/sh
+echo "[Pre-push Hook] Running syntax check..."
+node -c main.js
+if [ $? -ne 0 ]; then
+    echo "[Error] Syntax error in main.js! Push aborted."
+    exit 1
+fi
+node -c renderer.js
+if [ $? -ne 0 ]; then
+    echo "[Error] Syntax error in renderer.js! Push aborted."
+    exit 1
+fi
+echo "[Pre-push Hook] Syntax check passed."
+exit 0
