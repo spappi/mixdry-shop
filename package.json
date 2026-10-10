@@ -28,6 +28,8 @@
     }
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3"
+    "bcrypt": "^5.1.1",
+    "better-sqlite3": "^13.0.3",
+    "jsonwebtoken": "^9.0.2"
   }
 }
