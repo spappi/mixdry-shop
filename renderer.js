@@ -301,37 +301,6 @@ if (btnOpenApiSpec) {
     });
 }
 
-document.getElementById('btn-run-extract').addEventListener('click', async () => {
-    const url = document.getElementById('extract-url').value;
-    if (!url) return appendLog('URL을 입력해주세요.', 'error');
-    
-    document.getElementById('btn-open-clone-folder').style.display = 'none';
-    document.getElementById('btn-run-clone').style.display = 'none';
-    document.getElementById('btn-open-pattern-modal').style.display = 'none';
-    appendLog(`프론트엔드 추출(Deep Clone) 시작: ${url}...`);
-    document.getElementById('extract-result').textContent = '추출 진행 중...';
-    lastTargetUrl = url;
-    
-    try {
-        const outDirBase = document.getElementById('output-dir').value;
-        const res = await window.api.extractFrontend({ url, outDirBase });
-        appendLog(res.message, 'info');
-        extractedTokens = res.data;
-        lastExtractPath = res.data.clonePath;
-        renderExtractResult(res.data);
-        
-        document.getElementById('btn-open-clone-folder').style.display = 'inline-block';
-        document.getElementById('btn-open-clone-folder').onclick = () => window.api.openFolder(lastExtractPath);
-        
-        document.getElementById('btn-run-clone').style.display = 'inline-block';
-        document.getElementById('btn-run-clone').onclick = () => window.api.openClone(lastExtractPath);
-        
-        document.getElementById('btn-open-pattern-modal').style.display = 'inline-block';
-    } catch (err) {
-        appendLog(`추출 오류: ${err.message}`, 'error');
-        document.getElementById('extract-result').textContent = '오류 발생';
-    }
-});
 
 // v3: 패턴 등록 모달 처리
 const patternModal = document.getElementById('pattern-register-modal');

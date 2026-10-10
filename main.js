@@ -1335,7 +1335,40 @@ ipcMain.handle('extract-multi', async (event, config) => {
                                     sendLog(`[MIME 불일치] ${item.url} (text/html)`);
                                     continue;
                                 }
-                                fs.writeFileSync(path.join(outDir, item.localPath), bodyData.buf);
+                                if (item.type === 'css') {
+                                    let cssText = bodyData.buf.toString('utf8');
+                                    const matches = cssText.match(/url\(['"]?(.*?)['"]?\)/g);
+                                    if (matches) {
+                                        matches.forEach(m => {
+                                            const inner = m.replace(/url\(['"]?/, '').replace(/['"]?\)/, '').trim();
+                                            if (!inner || inner.startsWith('data:')) return;
+                                            try {
+                                                const u = new URL(inner, item.url).toString();
+                                                let lp = globalImgMap[u];
+                                                if (!lp) {
+                                                    const ext = u.split('.').pop().split('?')[0] || 'png';
+                                                    const safeExt = /^[a-zA-Z0-9]+$/.test(ext) ? ext : 'png';
+                                                    lp = 'assets/img-' + (nextImgId++) + '.' + safeExt;
+                                                    globalImgMap[u] = lp;
+                                                    
+                                                    const decU = decodeURIComponent(u);
+                                                    const innerBody = capturedBodies.get(u) || capturedBodies.get(decU);
+                                                    if (innerBody) {
+                                                        fs.writeFileSync(path.join(outDir, lp), innerBody.buf);
+                                                        capturedBodies.delete(u);
+                                                        capturedBodies.delete(decU);
+                                                        manifest.assets.push(lp);
+                                                    }
+                                                }
+                                                const newRelativePath = '../' + lp;
+                                                cssText = cssText.split(m).join(`url("${newRelativePath}")`);
+                                            } catch(e){}
+                                        });
+                                    }
+                                    fs.writeFileSync(path.join(outDir, item.localPath), cssText);
+                                } else {
+                                    fs.writeFileSync(path.join(outDir, item.localPath), bodyData.buf);
+                                }
                                 capturedBodies.delete(item.url); 
                                 capturedBodies.delete(decUrl);
                             } else {
