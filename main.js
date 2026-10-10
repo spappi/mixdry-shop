@@ -1791,14 +1791,16 @@ ipcMain.handle('repair-clone', async (e, dir, reviveInteractions) => {
     }
     const am = JSON.parse(fs.readFileSync(assetMapPath, 'utf8'));
     const repairList = [];
+    let deadSkipped = 0;
     for (const [lp, info] of Object.entries(am)) {
         if (info.status === 'dead') {
+            deadSkipped++;
             sendLog(`[복구 스킵] ${lp} (dead link)`);
         } else if (info.status === 'failed' || info.status === 'unreachable' || (info.status === 'ok' && !fs.existsSync(path.join(dir, lp)))) {
             repairList.push({ lp, url: info.url });
         }
     }
-    if (repairList.length === 0 && !reviveInteractions) return { success: true, repaired: 0, stillFailed: [], message: '복구할 항목이 없습니다.' };
+    if (repairList.length === 0 && !reviveInteractions) return { success: true, repaired: 0, stillFailed: [], message: '복구할 항목이 없습니다.', deadSkipped };
 
     const https = require('https');
     const http = require('http');
@@ -1881,8 +1883,7 @@ ipcMain.handle('repair-clone', async (e, dir, reviveInteractions) => {
             sendLog(`[인터랙션 부활 에러] ${err.message}`, 'error');
         }
     }
-
-    return { success: true, repaired, stillFailed, total: repairList.length };
+    return { success: true, repaired, stillFailed, total: repairList.length, deadSkipped };
 });
 
 ipcMain.handle('delete-clone', async (e, dir) => {
