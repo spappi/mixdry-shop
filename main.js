@@ -155,7 +155,10 @@ ipcMain.handle('cancel-operation', () => {
 });
 // v3.2: Extraction logic with Chrome DevTools Protocol (CDP)
 ipcMain.handle('extract-frontend', async (event, config) => {
-    const { url, outDirBase } = config;
+    const { url, cloneName } = config;
+    let libraryPath = config.libraryPath || config.outDirBase;
+    if (!libraryPath || !libraryPath.trim()) libraryPath = cloneLibraryPath;
+    libraryPath = path.resolve(libraryPath);
     let offscreenWindow = null;
     let debuggerAttached = false;
     const sendLog = (msg, type='info') => event.sender.send('log', msg, type);
@@ -1057,7 +1060,12 @@ ipcMain.handle('analyze-site', async (event, config) => {
 
 // v3.3: Multi-page Support (Sequential Extract)
 ipcMain.handle('extract-multi', async (event, config) => {
-    const { urls, libraryPath, cloneName, paramBlacklist } = config; 
+    const { urls, cloneName, paramBlacklist } = config; 
+    let libraryPath = config.libraryPath;
+    if (!libraryPath || !libraryPath.trim()) {
+        libraryPath = cloneLibraryPath;
+    }
+    libraryPath = path.resolve(libraryPath);
     let offscreenWindow = null;
     let debuggerAttached = false;
     const sendLog = (msg, type='info') => event.sender.send('log', msg, type);
@@ -1173,6 +1181,8 @@ ipcMain.handle('extract-multi', async (event, config) => {
         const manifest = { name: cName, targetUrl: urls[0].url, extractedAt: new Date().toISOString(), pages: [], failedPages: [], assets: [], duplicatePages: [] };
         const contentHashes = new Map();
         const failedDetails = [];
+        const loggedFailures = new Set();
+        const deadLinks = [];
 
         for (let i = 0; i < urls.length; i++) {
             if (cancelRequested) {
@@ -1389,24 +1399,23 @@ ipcMain.handle('extract-multi', async (event, config) => {
                         } else {
                             const decUrl = decodeURIComponent(item.url);
                             let bodyData = capturedBodies.get(item.url) || capturedBodies.get(decUrl);
-                            
+                            let fetchResult = null;
                             if (!bodyData) {
                                 try {
                                     const fbRes = await offscreenWindow.webContents.debugger.sendCommand('Runtime.evaluate', {
-                                        expression: `(async()=>{const r=await fetch("${item.url.replace(/"/g, '\\"')}");if(!r.ok)throw new Error(r.statusText);const b=await r.blob();const d=new FileReader();return new Promise((res,rej)=>{d.onloadend=()=>res(d.result);d.onerror=rej;d.readAsDataURL(b);})})()`,
+                                        expression: `(async()=>{try{const r=await fetch("${item.url.replace(/"/g, '\\\\"')}");if(!r.ok)return{ok:false,status:r.status};const b=await r.blob();const d=new FileReader();return new Promise((res,rej)=>{d.onloadend=()=>res({ok:true,status:200,b64:d.result.split(',')[1]});d.onerror=rej;d.readAsDataURL(b);});}catch(e){return{ok:false,status:0};}})()`,
                                         awaitPromise: true,
                                         returnByValue: true
                                     });
                                     if (fbRes.result && fbRes.result.value) {
-                                        const b64 = fbRes.result.value.split(',')[1];
-                                        if (b64) {
-                                            bodyData = { buf: Buffer.from(b64, 'base64'), mimeType: '' };
+                                        fetchResult = fbRes.result.value;
+                                        if (fetchResult.ok && fetchResult.b64) {
+                                            bodyData = { buf: Buffer.from(fetchResult.b64, 'base64'), mimeType: '' };
                                             sendLog(`[폴백 다운로드 성공] ${item.url}`);
                                         }
                                     }
                                 } catch(fbErr) {}
                             }
-
                             if (bodyData) {
                                 if (bodyData.mimeType && bodyData.mimeType.includes('text/html')) {
                                     sendLog(`[MIME 불일치] ${item.url} (text/html)`);
@@ -1430,16 +1439,19 @@ ipcMain.handle('extract-multi', async (event, config) => {
                                                     const decU = decodeURIComponent(u);
                                                     let innerBody = capturedBodies.get(u) || capturedBodies.get(decU);
                                                     
+                                                    let innerFetchResult = null;
                                                     if (!innerBody) {
                                                         try {
                                                             const fbRes = await offscreenWindow.webContents.debugger.sendCommand('Runtime.evaluate', {
-                                                                expression: `(async()=>{const r=await fetch("${u.replace(/"/g, '\\"')}");if(!r.ok)throw new Error(r.statusText);const b=await r.blob();const d=new FileReader();return new Promise((res,rej)=>{d.onloadend=()=>res(d.result);d.onerror=rej;d.readAsDataURL(b);})})()`,
+                                                                expression: `(async()=>{try{const r=await fetch("${u.replace(/"/g, '\\\\"')}");if(!r.ok)return{ok:false,status:r.status};const b=await r.blob();const d=new FileReader();return new Promise((res,rej)=>{d.onloadend=()=>res({ok:true,status:200,b64:d.result.split(',')[1]});d.onerror=rej;d.readAsDataURL(b);});}catch(e){return{ok:false,status:0};}})()`,
                                                                 awaitPromise: true,
                                                                 returnByValue: true
                                                             });
                                                             if (fbRes.result && fbRes.result.value) {
-                                                                const b64 = fbRes.result.value.split(',')[1];
-                                                                if (b64) innerBody = { buf: Buffer.from(b64, 'base64') };
+                                                                innerFetchResult = fbRes.result.value;
+                                                                if (innerFetchResult.ok && innerFetchResult.b64) {
+                                                                    innerBody = { buf: Buffer.from(innerFetchResult.b64, 'base64') };
+                                                                }
                                                             }
                                                         } catch(fbErr){}
                                                     }
@@ -1455,7 +1467,24 @@ ipcMain.handle('extract-multi', async (event, config) => {
                                                         const newRelativePath = '../' + lp;
                                                         cssText = cssText.split(m).join(`url("${newRelativePath}")`);
                                                     } else {
-                                                        assetMap[lp] = { url: u, status: 'failed', error: '[에셋 바디 없음]' };
+                                                        let assetStatus = 'unreachable';
+                                                        let assetError = '[에셋 바디 없음]';
+                                                        if (innerFetchResult && !innerFetchResult.ok) {
+                                                            const st = innerFetchResult.status;
+                                                            if (st === 404 || st === 403 || st === 410) {
+                                                                assetStatus = 'dead';
+                                                                assetError = `[Dead Link ${st}]`;
+                                                                deadLinks.push({ url: u, status: st });
+                                                            } else {
+                                                                assetStatus = 'unreachable';
+                                                                assetError = `[Fetch Failed ${st}]`;
+                                                            }
+                                                        }
+                                                        if (!loggedFailures.has(u)) {
+                                                            loggedFailures.add(u);
+                                                            sendLog(`[에셋 실패] CSS내부: ${u} - ${assetError}`, 'error');
+                                                        }
+                                                        assetMap[lp] = { url: u, status: assetStatus, error: assetError };
                                                     }
                                                 } else {
                                                     const newRelativePath = '../' + lp;
@@ -1476,11 +1505,34 @@ ipcMain.handle('extract-multi', async (event, config) => {
                                 capturedBodies.delete(decUrl);
                                 manifest.assets.push(item.localPath);
                             } else {
-                                sendLog(`[에셋 실패] ${item.url}`, 'error');
-                                assetMap[item.localPath] = { url: item.url, status: 'failed', error: '[에셋 바디 없음]' };
+                                let assetStatus = 'unreachable';
+                                let assetError = '[에셋 바디 없음]';
+                                if (fetchResult && !fetchResult.ok) {
+                                    const st = fetchResult.status;
+                                    if (st === 404 || st === 403 || st === 410) {
+                                        assetStatus = 'dead';
+                                        assetError = `[Dead Link ${st}]`;
+                                        deadLinks.push({ url: item.url, status: st });
+                                    } else {
+                                        assetStatus = 'unreachable';
+                                        assetError = `[Fetch Failed ${st}]`;
+                                    }
+                                }
+                                if (!loggedFailures.has(item.url)) {
+                                    loggedFailures.add(item.url);
+                                    sendLog(`[에셋 실패] ${item.url} - ${assetError}`, 'error');
+                                }
+                                assetMap[item.localPath] = { url: item.url, status: assetStatus, error: assetError };
+                                
                                 const prefix = localPath === 'index.html' ? './' : '../';
                                 const brokenUrl = prefix + item.localPath;
-                                pageData.html = pageData.html.split(brokenUrl).join(item.url);
+                                
+                                if (assetStatus === 'dead') {
+                                    const PLACEHOLDER = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+                                    pageData.html = pageData.html.split(brokenUrl).join(PLACEHOLDER);
+                                } else {
+                                    pageData.html = pageData.html.split(brokenUrl).join(item.url);
+                                }
                             }
                         }
                     } catch (e) {
@@ -1514,6 +1566,16 @@ ipcMain.handle('extract-multi', async (event, config) => {
         fs.writeFileSync(path.join(outDir, 'assetMap.json'), JSON.stringify(assetMap, null, 2));
         fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
         fs.writeFileSync(path.join(outDir, 'README.md'), `# Multi-page Clone of ${domain}\n\nOpen \`index.html\` to view the cloned structure.\n\nTotal pages: ${manifest.pages.length}`);
+        if (deadLinks.length > 0) {
+            let deadContent = `# Dead Links (원본 서버에 존재하지 않음)\n# 생성: ${new Date().toISOString()}\n#\n`;
+            deadLinks.forEach(dl => {
+                deadContent += `${dl.url} (${dl.status})\n`;
+            });
+            fs.writeFileSync(path.join(outDir, 'dead-links.txt'), deadContent);
+        }
+        if (loggedFailures.size > 0) {
+            sendLog(`[에셋 실패 요약] 고유 ${loggedFailures.size}개 URL 실패`, 'warn');
+        }
         if (failedDetails.length > 0) {
             const logName = `error-log-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
             const logPath = path.join(outDir, logName);
@@ -1614,6 +1676,7 @@ ipcMain.handle('load-clone', async (e, dir) => {
 });
 
 ipcMain.handle('repair-clone', async (e, dir) => {
+    const sendLog = (msg, type='info') => e.sender.send('log', msg, type);
     const assetMapPath = path.join(dir, 'assetMap.json');
     if (!fs.existsSync(assetMapPath)) {
         return { success: false, message: 'assetMap.json이 없습니다. 부분 스캔 모드 진단결과 디스크에서 누락된 파일을 확인하세요.' };
@@ -1621,7 +1684,9 @@ ipcMain.handle('repair-clone', async (e, dir) => {
     const am = JSON.parse(fs.readFileSync(assetMapPath, 'utf8'));
     const repairList = [];
     for (const [lp, info] of Object.entries(am)) {
-        if (info.status === 'failed' || (info.status === 'ok' && !fs.existsSync(path.join(dir, lp)))) {
+        if (info.status === 'dead') {
+            sendLog(`[복구 스킵] ${lp} (dead link)`);
+        } else if (info.status === 'failed' || info.status === 'unreachable' || (info.status === 'ok' && !fs.existsSync(path.join(dir, lp)))) {
             repairList.push({ lp, url: info.url });
         }
     }
