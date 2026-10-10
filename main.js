@@ -1198,6 +1198,11 @@ ipcMain.handle('extract-multi', async (event, config) => {
                                 const u = new URL(href, window.location.href);
                                 u.hash = '';
                                 paramBlacklist.forEach(p => u.searchParams.delete(p.trim()));
+                                const keys = Array.from(u.searchParams.keys());
+                                keys.forEach(k => {
+                                    if (u.searchParams.get(k) === '') u.searchParams.delete(k);
+                                });
+                                u.searchParams.sort();
                                 let s = u.toString();
                                 if (s.endsWith('/') && s.length > u.origin.length + 1) s = s.slice(0, -1);
                                 return s;
@@ -1358,15 +1363,31 @@ ipcMain.handle('extract-multi', async (event, config) => {
                 contentHashes.set(hash, localPath);
 
                 for (const item of pageData.newAssets) {
-                    if (item.type === 'css') globalCssMap[item.url] = item.localPath;
-                    if (item.type === 'asset') globalImgMap[item.url] = item.localPath;
-
                     try {
                         if (item.type === 'inline-css') {
                             fs.writeFileSync(path.join(outDir, item.localPath), item.text);
+                            manifest.assets.push(item.localPath);
                         } else {
                             const decUrl = decodeURIComponent(item.url);
                             let bodyData = capturedBodies.get(item.url) || capturedBodies.get(decUrl);
+                            
+                            if (!bodyData) {
+                                try {
+                                    const fbRes = await offscreenWindow.webContents.debugger.sendCommand('Runtime.evaluate', {
+                                        expression: `(async()=>{const r=await fetch("${item.url.replace(/"/g, '\\"')}");if(!r.ok)throw new Error(r.statusText);const b=await r.blob();const d=new FileReader();return new Promise((res,rej)=>{d.onloadend=()=>res(d.result);d.onerror=rej;d.readAsDataURL(b);})})()`,
+                                        awaitPromise: true,
+                                        returnByValue: true
+                                    });
+                                    if (fbRes.result && fbRes.result.value) {
+                                        const b64 = fbRes.result.value.split(',')[1];
+                                        if (b64) {
+                                            bodyData = { buf: Buffer.from(b64, 'base64'), mimeType: '' };
+                                            sendLog(`[폴백 다운로드 성공] ${item.url}`);
+                                        }
+                                    }
+                                } catch(fbErr) {}
+                            }
+
                             if (bodyData) {
                                 if (bodyData.mimeType && bodyData.mimeType.includes('text/html')) {
                                     sendLog(`[MIME 불일치] ${item.url} (text/html)`);
@@ -1376,9 +1397,9 @@ ipcMain.handle('extract-multi', async (event, config) => {
                                     let cssText = bodyData.buf.toString('utf8');
                                     const matches = cssText.match(/url\(['"]?(.*?)['"]?\)/g);
                                     if (matches) {
-                                        matches.forEach(m => {
+                                        for (const m of matches) {
                                             const inner = m.replace(/url\(['"]?/, '').replace(/['"]?\)/, '').trim();
-                                            if (!inner || inner.startsWith('data:')) return;
+                                            if (!inner || inner.startsWith('data:')) continue;
                                             try {
                                                 const u = new URL(inner, item.url).toString();
                                                 let lp = globalImgMap[u];
@@ -1386,33 +1407,57 @@ ipcMain.handle('extract-multi', async (event, config) => {
                                                     const ext = u.split('.').pop().split('?')[0] || 'png';
                                                     const safeExt = /^[a-zA-Z0-9]+$/.test(ext) ? ext : 'png';
                                                     lp = 'assets/img-' + (nextImgId++) + '.' + safeExt;
-                                                    globalImgMap[u] = lp;
                                                     
                                                     const decU = decodeURIComponent(u);
-                                                    const innerBody = capturedBodies.get(u) || capturedBodies.get(decU);
+                                                    let innerBody = capturedBodies.get(u) || capturedBodies.get(decU);
+                                                    
+                                                    if (!innerBody) {
+                                                        try {
+                                                            const fbRes = await offscreenWindow.webContents.debugger.sendCommand('Runtime.evaluate', {
+                                                                expression: `(async()=>{const r=await fetch("${u.replace(/"/g, '\\"')}");if(!r.ok)throw new Error(r.statusText);const b=await r.blob();const d=new FileReader();return new Promise((res,rej)=>{d.onloadend=()=>res(d.result);d.onerror=rej;d.readAsDataURL(b);})})()`,
+                                                                awaitPromise: true,
+                                                                returnByValue: true
+                                                            });
+                                                            if (fbRes.result && fbRes.result.value) {
+                                                                const b64 = fbRes.result.value.split(',')[1];
+                                                                if (b64) innerBody = { buf: Buffer.from(b64, 'base64') };
+                                                            }
+                                                        } catch(fbErr){}
+                                                    }
+
                                                     if (innerBody) {
                                                         fs.writeFileSync(path.join(outDir, lp), innerBody.buf);
                                                         capturedBodies.delete(u);
                                                         capturedBodies.delete(decU);
                                                         manifest.assets.push(lp);
+                                                        globalImgMap[u] = lp;
+                                                        
+                                                        const newRelativePath = '../' + lp;
+                                                        cssText = cssText.split(m).join(`url("${newRelativePath}")`);
                                                     }
+                                                } else {
+                                                    const newRelativePath = '../' + lp;
+                                                    cssText = cssText.split(m).join(`url("${newRelativePath}")`);
                                                 }
-                                                const newRelativePath = '../' + lp;
-                                                cssText = cssText.split(m).join(`url("${newRelativePath}")`);
                                             } catch(e){}
-                                        });
+                                        }
                                     }
                                     fs.writeFileSync(path.join(outDir, item.localPath), cssText);
+                                    globalCssMap[item.url] = item.localPath;
                                 } else {
                                     fs.writeFileSync(path.join(outDir, item.localPath), bodyData.buf);
+                                    globalImgMap[item.url] = item.localPath;
                                 }
                                 capturedBodies.delete(item.url); 
                                 capturedBodies.delete(decUrl);
+                                manifest.assets.push(item.localPath);
                             } else {
-                                sendLog(`[에셋 바디 없음] ${item.url}`, 'error');
+                                sendLog(`[에셋 실패] ${item.url}`, 'error');
+                                const prefix = localPath === 'index.html' ? './' : '../';
+                                const brokenUrl = prefix + item.localPath;
+                                pageData.html = pageData.html.split(brokenUrl).join(item.url);
                             }
                         }
-                        manifest.assets.push(item.localPath);
                     } catch (e) {
                         sendLog(`[에셋 실패] ${item.localPath} - ${e.message}`, 'error');
                     }
