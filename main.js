@@ -1783,7 +1783,7 @@ ipcMain.handle('load-clone', async (e, dir) => {
     return { manifest, urlmap, assetMap };
 });
 
-ipcMain.handle('repair-clone', async (e, dir, reviveInteractions) => {
+ipcMain.handle('repair-clone', async (e, dir) => {
     const sendLog = (msg, type='info') => e.sender.send('log', msg, type);
     const assetMapPath = path.join(dir, 'assetMap.json');
     if (!fs.existsSync(assetMapPath)) {
@@ -1800,7 +1800,9 @@ ipcMain.handle('repair-clone', async (e, dir, reviveInteractions) => {
             repairList.push({ lp, url: info.url });
         }
     }
-    if (repairList.length === 0 && !reviveInteractions) return { success: true, repaired: 0, stillFailed: [], message: '복구할 항목이 없습니다.', deadSkipped };
+    if (repairList.length === 0) {
+        sendLog(`[복구 완료] 복구할 항목이 없습니다 (${deadSkipped}개는 dead link로 스킵됨)`, 'info');
+    }
 
     const https = require('https');
     const http = require('http');
@@ -1840,7 +1842,7 @@ ipcMain.handle('repair-clone', async (e, dir, reviveInteractions) => {
     }
     fs.writeFileSync(assetMapPath, JSON.stringify(am, null, 2));
 
-    if (reviveInteractions) {
+    if (true) {
         sendLog('[인터랙션 부활] HTML 스캔 및 패치 시작...');
         try {
             fs.mkdirSync(path.join(dir, 'js'), { recursive: true });
@@ -1882,6 +1884,9 @@ ipcMain.handle('repair-clone', async (e, dir, reviveInteractions) => {
         } catch(err) {
             sendLog(`[인터랙션 부활 에러] ${err.message}`, 'error');
         }
+    }
+    if (repairList.length > 0) {
+        sendLog(`[복구 완료] 복구됨: ${repaired}개, 여전히 실패: ${stillFailed.length}개`, stillFailed.length ? 'error' : 'info');
     }
     return { success: true, repaired, stillFailed, total: repairList.length, deadSkipped };
 });

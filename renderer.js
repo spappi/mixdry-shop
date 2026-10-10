@@ -531,7 +531,8 @@ async function loadClones() {
         grid.innerHTML = '';
         clones.forEach((c, idx) => {
             const card = document.createElement('div');
-            card.style = 'background: #1a1a1a; border: 1px solid #444; border-radius: 5px; overflow: hidden; display: flex; flex-direction: column;';
+            card.style = 'background: #1a1a1a; border: 1px solid #444; border-radius: 5px; overflow: hidden; display: flex; flex-direction: column; cursor: pointer;';
+            card.ondblclick = () => window.api.openCloneFolder(c.dir);
             
             const thumb = c.hasScreenshot ? `file:///${c.dir.replace(/\\/g, '/')}/screenshot.png` : '';
             const thumbHtml = thumb ? `<img src="${thumb}" style="width: 100%; height: 120px; object-fit: cover; border-bottom: 1px solid #333;">` : `<div style="width: 100%; height: 120px; background: #333; display: flex; align-items: center; justify-content: center; color: #777; border-bottom: 1px solid #222;">NO IMAGE</div>`;
@@ -550,17 +551,11 @@ async function loadClones() {
                     <div style="font-size: 11px; color: #aaa; margin-bottom: 10px;">${c.pages}페이지 · ${c.assets}에셋</div>
                     <div style="font-size: 11px; color: #fff; background: transparent; border: 1px solid ${badgeBg}; color: ${badgeBg}; padding: 3px 6px; border-radius: 3px; display: inline-block; align-self: flex-start; margin-bottom: 15px;">${badgeText}</div>
                     
-                    <div style="margin-bottom: 8px;">
-                        <label for="revive-${idx}" style="font-size: 11px; cursor: pointer; display: flex; align-items: center; gap: 4px; color: #ff9800; width: fit-content;">
-                            <input type="checkbox" id="revive-${idx}" style="margin:0;"> 인터랙션 부활 (복구 시 적용)
-                        </label>
-                    </div>
-                    
                     <div style="margin-top: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 5px;">
-                        <button class="primary-btn" style="padding: 5px 0; font-size: 11px;" onclick="doLoadClone('${c.dir.replace(/\\/g, '\\\\')}')">이어하기</button>
-                        <button class="primary-btn" style="padding: 5px 0; font-size: 11px; background-color: #ff9800;" onclick="doRepairClone('${c.dir.replace(/\\/g, '\\\\')}', document.getElementById('revive-${idx}').checked)">복구</button>
-                        <button class="icon-btn" style="padding: 5px 0; font-size: 11px;" onclick="window.api.openCloneFolder('${c.dir.replace(/\\/g, '\\\\')}')">폴더 열기</button>
-                        <button class="icon-btn" style="padding: 5px 0; font-size: 11px; color: #f44336; border-color: #f44336;" onclick="doDeleteClone('${c.dir.replace(/\\/g, '\\\\')}')">삭제</button>
+                        <button class="primary-btn" style="padding: 5px 0; font-size: 11px;" onclick="event.stopPropagation(); doLoadClone('${c.dir.replace(/\\/g, '\\\\')}')">이어하기</button>
+                        <button class="primary-btn" style="padding: 5px 0; font-size: 11px; background-color: #ff9800;" onclick="event.stopPropagation(); doRepairClone('${c.dir.replace(/\\/g, '\\\\')}')">복구</button>
+                        <button class="icon-btn" style="padding: 5px 0; font-size: 11px;" onclick="event.stopPropagation(); window.api.openCloneFolder('${c.dir.replace(/\\/g, '\\\\')}')">폴더 열기</button>
+                        <button class="icon-btn" style="padding: 5px 0; font-size: 11px; color: #f44336; border-color: #f44336;" onclick="event.stopPropagation(); doDeleteClone('${c.dir.replace(/\\/g, '\\\\')}')">삭제</button>
                     </div>
                 </div>
             `;
@@ -588,17 +583,11 @@ window.doLoadClone = async (dir) => {
     }
 };
 
-window.doRepairClone = async (dir, reviveInteractions = false) => {
-    appendLog(`[복구] ${dir} 복구 시작... (인터랙션 부활: ${reviveInteractions})`);
+window.doRepairClone = async (dir) => {
+    appendLog(`[복구] ${dir} 복구 시작...`);
     try {
-        const res = await window.api.repairClone(dir, reviveInteractions);
-        if (res.success) {
-            if (res.repaired === 0 && res.stillFailed.length === 0) {
-                appendLog(`[복구 완료] 복구할 항목이 없습니다 (${res.deadSkipped || 0}개는 dead link로 스킵됨)`, 'info');
-            } else {
-                appendLog(`[복구 완료] 복구됨: ${res.repaired}개, 여전히 실패: ${res.stillFailed.length}개`, res.stillFailed.length ? 'error' : 'info');
-            }
-        } else {
+        const res = await window.api.repairClone(dir);
+        if (!res.success) {
             appendLog(`[복구 실패] ${res.message}`, 'error');
             if (res.message.includes('부분 스캔')) alert(res.message);
         }

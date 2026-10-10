@@ -24,7 +24,7 @@ contextBridge.exposeInMainWorld('api', {
     // v4.3 Clone Library IPCs
     listClones: () => ipcRenderer.invoke('list-clones'),
     loadClone: (dir) => ipcRenderer.invoke('load-clone', dir),
-    repairClone: (dir, revive) => ipcRenderer.invoke('repair-clone', dir, revive),
+    repairClone: (dir) => ipcRenderer.invoke('repair-clone', dir),
     deleteClone: (dir) => ipcRenderer.invoke('delete-clone', dir),
     importClone: () => ipcRenderer.invoke('import-clone'),
     openCloneFolder: (dir) => ipcRenderer.invoke('open-clone-folder', dir),
