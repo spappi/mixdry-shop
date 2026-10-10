@@ -1393,8 +1393,8 @@ ipcMain.handle('extract-multi', async (event, config) => {
                                     if (closeBtn) {
                                         el.setAttribute('data-gjc-modal', 'true');
                                         if (el.id) {
-                                            document.querySelectorAll(`a[href="#${el.id}"]`).forEach(a => {
-                                                if (!a.hasAttribute('data-gjc-modal-open')) a.setAttribute('data-gjc-modal-open', `#${el.id}`);
+                                            document.querySelectorAll('a[href="#' + el.id + '"]').forEach(a => {
+                                                if (!a.hasAttribute('data-gjc-modal-open')) a.setAttribute('data-gjc-modal-open', '#' + el.id);
                                             });
                                         }
                                         detectCounts.modal++;
