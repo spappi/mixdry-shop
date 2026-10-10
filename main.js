@@ -1557,28 +1557,112 @@ ipcMain.handle('extract-multi', async (event, config) => {
                 }
                 contentHashes.set(hash, localPath);
 
-                const extractBackendCalls = (code, sourceName) => {
+                const processBackendCalls = (code, sourceName) => {
                     const calls = [];
-                    const re = /(?:\$\.(ajax|post|get|getJSON)|fetch|axios\.(post|get)|(?:xhr|req|ajax)\.open)\s*\(\s*(?:['"`]([^'"`]+)['"`]|['"`][A-Z]+['"`]\s*,\s*['"`]([^'"`]+)['"`])/ig;
-                    let match;
-                    while ((match = re.exec(code)) !== null) {
-                        const methodStr = match[1] || match[2] || 'UNKNOWN';
+                    let stubbedCode = code;
+                    
+                    const resolveUrl = (varName, beforeCode) => {
+                        if (/^['"`]/.test(varName)) return varName.slice(1, -1);
+                        const assignRegex = new RegExp(`(?:var|let|const)?\\s*${varName}\\s*=\\s*(['"\`])(.*?)\\1`, 'g');
+                        let lastMatch;
+                        let m;
+                        while ((m = assignRegex.exec(beforeCode)) !== null) {
+                            lastMatch = m;
+                        }
+                        if (lastMatch) {
+                            return lastMatch[2];
+                        }
+                        return `${varName} (미해결)`;
+                    };
+
+                    const isBackendUrl = (url) => url && (url.includes('.php') || url.includes('/api/') || url.includes('?') || url.includes('(미해결)'));
+
+                    const reFallback = /(?:\$\.(ajax|post|get|getJSON)|fetch|axios\.(post|get)|(?:xhr|req|ajax)\.open)\s*\(\s*(?:['"`]([^'"`]+)['"`]|['"`][A-Z]+['"`]\s*,\s*['"`]([^'"`]+)['"`])/ig;
+                    let mFallback;
+                    while ((mFallback = reFallback.exec(code)) !== null) {
+                        const methodStr = mFallback[1] || mFallback[2] || 'UNKNOWN';
                         const method = methodStr.toUpperCase() === 'AJAX' ? 'UNKNOWN' : methodStr.toUpperCase();
-                        const url = match[3] || match[4];
-                        if (url && (url.includes('.php') || url.includes('/api/') || url.includes('?'))) {
+                        const url = mFallback[3] || mFallback[4];
+                        if (isBackendUrl(url)) {
                             calls.push({ url, method, params: ["..."], source: sourceName, responseFields: [], type: url.match(/log|google-analytics|facebook\.net|tracker/i) ? 'tracking' : 'api' });
                         }
                     }
-                    return calls;
-                };
 
-                const stubBackendCalls = (code) => {
-                    return code.replace(/(?:\$\.(post|get|getJSON))\s*\(\s*(['"`][^'"`]+['"`])\s*,\s*([^,]+)\s*,\s*([^\)]+)\)/g, (m, method, url, data, callback) => {
-                        if (url.includes('.php') || url.includes('/api/') || url.includes('?')) {
-                            return `(function(){console.warn('[STUB] Backend call intercepted:', ${url}); try { ${callback}({ total_price: '99,000원 (스텁)', goods_price_vat: '108,900원 (스텁)' }); } catch(e){} })()`;
+                    const xhrRegex = /(?:var|let|const)\s+([A-Za-z0-9_$]+)\s*=\s*new\s+XMLHttpRequest\s*\(\s*\)/g;
+                    let xhrMatch;
+                    while ((xhrMatch = xhrRegex.exec(code)) !== null) {
+                        const varName = xhrMatch[1];
+                        const openRegex = new RegExp(`${varName}\\.open\\s*\\(\\s*['"\`]([A-Z]+)['"\`]\\s*,\\s*([^,]+?)\\s*\\)`, 'g');
+                        let openMatch;
+                        while ((openMatch = openRegex.exec(code)) !== null) {
+                            const method = openMatch[1];
+                            const urlVal = openMatch[2].trim();
+                            const beforeCode = code.substring(0, openMatch.index);
+                            const url = resolveUrl(urlVal.split(/\s*\+/)[0], beforeCode);
+                            if (isBackendUrl(url)) {
+                                calls.push({ url, method, params: ["..."], source: sourceName, responseFields: [], type: 'api' });
+                            }
+                        }
+                    }
+
+                    let replacements = [];
+                    let index = 0;
+                    while (true) {
+                        const ajaxIdx = code.indexOf('$.ajax(', index);
+                        if (ajaxIdx === -1) break;
+                        
+                        let paramStart = ajaxIdx + 7;
+                        while (paramStart < code.length && /\s/.test(code[paramStart])) paramStart++;
+                        
+                        if (code[paramStart] === '{') {
+                            let braceCount = 1;
+                            let objEnd = paramStart + 1;
+                            while (objEnd < code.length && braceCount > 0) {
+                                if (code[objEnd] === '{') braceCount++;
+                                else if (code[objEnd] === '}') braceCount--;
+                                objEnd++;
+                            }
+                            
+                            let callEnd = objEnd;
+                            while (callEnd < code.length && /\s/.test(code[callEnd])) callEnd++;
+                            if (code[callEnd] === ')') callEnd++;
+                            
+                            const objText = code.substring(paramStart, objEnd);
+                            const beforeCode = code.substring(0, ajaxIdx);
+                            
+                            let urlMatch = objText.match(/url\s*:\s*([^,}\s]+(?:\s*\+\s*[^,}\s]+)*)/);
+                            let url = '';
+                            if (urlMatch) {
+                                url = resolveUrl(urlMatch[1].trim().split(/\s*\+/)[0], beforeCode);
+                            }
+                            
+                            let methodMatch = objText.match(/(?:type|method)\s*:\s*['"`]([A-Za-z]+)['"`]/i);
+                            let method = methodMatch ? methodMatch[1].toUpperCase() : 'UNKNOWN';
+                            
+                            if (isBackendUrl(url)) {
+                                calls.push({ url, method, params: ["..."], source: sourceName, responseFields: [], type: url.match(/log|google-analytics|facebook\.net|tracker/i) ? 'tracking' : 'api' });
+                                
+                                const stub = `(function(){ var cfg = ${objText}; console.warn('[STUB] Backend call intercepted:', cfg.url); var fake = { total_price: '99,000원 (스텁)', goods_price_vat: '108,900원 (스텁)' }; try { if (cfg.success) cfg.success(fake); } catch(e){} })()`;
+                                replacements.push({ start: ajaxIdx, end: callEnd, text: stub });
+                            }
+                        }
+                        index = ajaxIdx + 7;
+                    }
+                    
+                    replacements.sort((a, b) => b.start - a.start);
+                    for (const r of replacements) {
+                        stubbedCode = stubbedCode.substring(0, r.start) + r.text + stubbedCode.substring(r.end);
+                    }
+                    
+                    stubbedCode = stubbedCode.replace(/(?:\$\.(post|get|getJSON))\s*\(\s*(['"`][^'"`]+['"`])\s*,\s*([^,]+)\s*,\s*([^\)]+)\)/g, (m, method, urlStr, data, callback) => {
+                        const url = resolveUrl(urlStr.trim().split(/\s*\+/)[0], '');
+                        if (isBackendUrl(url)) {
+                            return `(function(){console.warn('[STUB] Backend call intercepted:', ${urlStr}); try { ${callback}({ total_price: '99,000원 (스텁)', goods_price_vat: '108,900원 (스텁)' }); } catch(e){} })()`;
                         }
                         return m;
                     });
+
+                    return { calls, stubbedCode };
                 };
 
                 for (const item of pageData.newAssets) {
@@ -1588,9 +1672,8 @@ ipcMain.handle('extract-multi', async (event, config) => {
                             manifest.assets.push(item.localPath);
                             assetMap[item.localPath] = { url: item.url, status: 'ok' };
                         } else if (item.type === 'inline-js') {
-                            const calls = extractBackendCalls(item.text, 'inline-script');
+                            const { calls, stubbedCode: stubbed } = processBackendCalls(item.text, currentLocalPath);
                             if (calls.length > 0) backendEndpoints.push(...calls);
-                            const stubbed = stubBackendCalls(item.text);
                             
                             fs.mkdirSync(path.join(outDir, 'original', path.dirname(item.localPath)), { recursive: true });
                             fs.mkdirSync(path.join(outDir, path.dirname(item.localPath)), { recursive: true });
@@ -1702,9 +1785,8 @@ ipcMain.handle('extract-multi', async (event, config) => {
                                     assetMap[item.localPath] = { url: item.url, status: 'ok' };
                                 } else if (item.type === 'js') {
                                     let jsText = bodyData.buf.toString('utf8');
-                                    const calls = extractBackendCalls(jsText, item.url);
+                                    const { calls, stubbedCode: stubbed } = processBackendCalls(jsText, currentLocalPath);
                                     if (calls.length > 0) backendEndpoints.push(...calls);
-                                    const stubbed = stubBackendCalls(jsText);
 
                                     fs.mkdirSync(path.join(outDir, 'original', path.dirname(item.localPath)), { recursive: true });
                                     fs.mkdirSync(path.join(outDir, path.dirname(item.localPath)), { recursive: true });
@@ -1803,7 +1885,23 @@ ipcMain.handle('extract-multi', async (event, config) => {
             return 0;
         });
 
-        fs.writeFileSync(path.join(outDir, 'backend-raw.json'), JSON.stringify({ endpoints: dedupedEndpoints, forms: backendForms }, null, 2));
+        const dedupedForms = [];
+        const formMap = new Map();
+        backendForms.forEach(f => {
+            const key = f.method + '|' + f.action;
+            if (!formMap.has(key)) {
+                formMap.set(key, { ...f, sources: new Set([f.source]) });
+            } else {
+                formMap.get(key).sources.add(f.source);
+            }
+        });
+        formMap.forEach(f => {
+            f.sources = Array.from(f.sources);
+            delete f.source;
+            dedupedForms.push(f);
+        });
+
+        fs.writeFileSync(path.join(outDir, 'backend-raw.json'), JSON.stringify({ endpoints: dedupedEndpoints, forms: dedupedForms }, null, 2));
         fs.writeFileSync(path.join(outDir, 'assetMap.json'), JSON.stringify(assetMap, null, 2));
         fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
         fs.writeFileSync(path.join(outDir, 'README.md'), `# Multi-page Clone of ${domain}\n\nOpen \`index.html\` to view the cloned structure.\n\nTotal pages: ${manifest.pages.length}`);
@@ -2089,7 +2187,15 @@ ipcMain.handle('preview-clone', async (e, dir) => {
     const startServer = (port) => {
         return new Promise((resolve, reject) => {
             previewServer = http.createServer((req, res) => {
-                let filePath = path.join(dir, req.url === '/' ? 'index.html' : req.url.split('?')[0]);
+                let reqPath = req.url === '/' ? 'index.html' : req.url.split('?')[0];
+                // remove leading slash for proper path joining
+                if (reqPath.startsWith('/')) reqPath = reqPath.substring(1);
+                let filePath = path.normalize(path.join(dir, reqPath));
+                if (!filePath.startsWith(path.normalize(dir))) {
+                    res.writeHead(403);
+                    res.end('Forbidden');
+                    return;
+                }
                 if (!fs.existsSync(filePath)) {
                     res.writeHead(404);
                     res.end('Not Found');
