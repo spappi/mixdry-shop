@@ -290,10 +290,24 @@ ipcMain.handle('extract-frontend', async (event, config) => {
                         if (item.type === 'inline-css') {
                             fs.writeFileSync(path.join(outDir, item.localPath), item.text);
                         } else {
-                            const res = await fetch(item.url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-                            if (!res.ok) throw new Error(res.statusText);
-                            const buffer = Buffer.from(await res.arrayBuffer());
-                            fs.writeFileSync(path.join(outDir, item.localPath), buffer);
+                            // Fetch from inside the browser context to inherit cookies and User-Agent
+                            const b64 = await offscreenWindow.webContents.executeJavaScript(`
+                                fetch("${item.url}")
+                                    .then(res => {
+                                        if (!res.ok) throw new Error(res.statusText);
+                                        return res.arrayBuffer();
+                                    })
+                                    .then(buffer => {
+                                        const bytes = new Uint8Array(buffer);
+                                        let binary = '';
+                                        const len = bytes.byteLength;
+                                        for (let i = 0; i < len; i += 32768) {
+                                            binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 32768));
+                                        }
+                                        return btoa(binary);
+                                    })
+                            `);
+                            fs.writeFileSync(path.join(outDir, item.localPath), Buffer.from(b64, 'base64'));
                         }
                         assets.push(item);
                         sendLog(`[다운로드 성공] ${item.localPath}`);
@@ -307,6 +321,9 @@ ipcMain.handle('extract-frontend', async (event, config) => {
         }
 
         await processQueue(pageData.assetUrls, 5);
+
+        // Window destruction delayed until downloads are fully complete
+        if (offscreenWindow && !offscreenWindow.isDestroyed()) offscreenWindow.destroy();
 
         const manifest = { targetUrl: url, extractedAt: new Date().toISOString(), assets, failedAssets };
         fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
@@ -340,7 +357,7 @@ ipcMain.handle('scaffold-backend', async (event, config) => {
             scripts: { start: "node server.js" },
             dependencies: {
                 "express": "^4.18.2",
-                "better-sqlite3": "^9.4.3",
+                "better-sqlite3": "^12.11.1",
                 "cors": "^2.8.5",
                 "bcrypt": "^5.1.1",
                 "jsonwebtoken": "^9.0.2"
