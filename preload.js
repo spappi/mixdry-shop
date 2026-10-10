@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer, webFrame, clipboard } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
+    analyzeSite: (config) => ipcRenderer.invoke('analyze-site', config),
     extractFrontend: (config) => ipcRenderer.invoke('extract-frontend', config),
     crawlLinks: (config) => ipcRenderer.invoke('crawl-links', config),
     extractMulti: (config) => ipcRenderer.invoke('extract-multi', config),

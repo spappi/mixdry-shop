@@ -727,6 +727,194 @@ ipcMain.handle('crawl-links', async (event, config) => {
         if (offscreenWindow && !offscreenWindow.isDestroyed()) offscreenWindow.destroy();
     }
 });
+// v3.4: Analyze Site (Analyze-First Loop)
+ipcMain.handle('analyze-site', async (event, config) => {
+    const { url, outDirBase } = config;
+    let offscreenWindow = null;
+    let debuggerAttached = false;
+    const sendLog = (msg, type='info') => event.sender.send('log', msg, type);
+
+    try {
+        const domain = new URL(url).hostname;
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const outDir = path.join(outDirBase, `analyze_${domain}_${timestamp}`);
+        fs.mkdirSync(outDir, { recursive: true });
+
+        offscreenWindow = new BrowserWindow({
+            show: false,
+            webPreferences: { offscreen: true, nodeIntegration: false, contextIsolation: true }
+        });
+
+        const apiTraffic = [];
+        const reqMap = new Map();
+
+        try {
+            if (offscreenWindow.webContents.debugger.isAttached()) offscreenWindow.webContents.debugger.detach();
+            offscreenWindow.webContents.debugger.attach('1.3');
+            await offscreenWindow.webContents.debugger.sendCommand('Network.enable');
+            debuggerAttached = true;
+
+            offscreenWindow.webContents.debugger.on('message', async (e, method, params) => {
+                try {
+                    if (method === 'Network.requestWillBeSent') {
+                        reqMap.set(params.requestId, {
+                            url: params.request.url,
+                            method: params.request.method,
+                            postData: params.request.postData,
+                            headers: params.request.headers
+                        });
+                    } else if (method === 'Network.responseReceived') {
+                        const req = reqMap.get(params.requestId);
+                        if (req && (params.type === 'XHR' || params.type === 'Fetch')) {
+                            req.status = params.response.status;
+                            req.mimeType = params.response.mimeType;
+                        }
+                    } else if (method === 'Network.loadingFinished') {
+                        const req = reqMap.get(params.requestId);
+                        if (req && req.status) { // It was XHR/Fetch
+                            try {
+                                const { body, base64Encoded } = await offscreenWindow.webContents.debugger.sendCommand(
+                                    'Network.getResponseBody', { requestId: params.requestId }
+                                );
+                                req.responseBody = base64Encoded ? Buffer.from(body, 'base64').toString('utf8') : body;
+                                apiTraffic.push(req);
+                            } catch (err) {}
+                        }
+                        reqMap.delete(params.requestId);
+                    }
+                } catch (err) {}
+            });
+        } catch (e) {
+            sendLog('디버거 부착 실패 (API 캡처 불가): ' + e.message, 'error');
+        }
+
+        sendLog(`분석용 URL 로딩 시작: ${url}`);
+        await offscreenWindow.loadURL(url, { waitUntil: 'domcontentloaded' });
+        await new Promise(r => setTimeout(r, 4000)); // Wait for initial API calls
+
+        // 1. Generate OpenAPI spec from traffic
+        const openApiSpec = {
+            openapi: "3.0.0",
+            info: { title: `Inferred API for ${domain}`, version: "1.0.0" },
+            paths: {}
+        };
+
+        apiTraffic.forEach(req => {
+            try {
+                const u = new URL(req.url);
+                if (u.hostname !== domain && !u.hostname.includes('api')) return; // Filter external analytics
+                
+                const pathSegments = u.pathname.split('/').map(seg => /^\d+$/.test(seg) ? '{id}' : seg);
+                const pathStr = pathSegments.join('/') || '/';
+                const method = req.method.toLowerCase();
+
+                if (!openApiSpec.paths[pathStr]) openApiSpec.paths[pathStr] = {};
+                
+                if (!openApiSpec.paths[pathStr][method]) {
+                    const op = {
+                        summary: `Inferred ${req.method} ${pathStr}`,
+                        responses: {
+                            "200": { description: "Successful response" }
+                        }
+                    };
+
+                    if (u.searchParams.toString()) {
+                        op.parameters = Array.from(u.searchParams.keys()).map(k => ({
+                            name: k,
+                            in: "query",
+                            schema: { type: "string" }
+                        }));
+                    }
+
+                    if (req.responseBody && req.mimeType && req.mimeType.includes('json')) {
+                        try {
+                            const parsed = JSON.parse(req.responseBody);
+                            op.responses["200"].content = {
+                                "application/json": {
+                                    example: Array.isArray(parsed) ? parsed.slice(0,2) : parsed
+                                }
+                            };
+                        } catch(e) {}
+                    }
+                    openApiSpec.paths[pathStr][method] = op;
+                }
+            } catch(e) {}
+        });
+
+        const apiSpecPath = path.join(outDir, 'api-spec.json');
+        fs.writeFileSync(apiSpecPath, JSON.stringify(openApiSpec, null, 2));
+
+        // 2. Extract heuristic profile
+        const profile = await offscreenWindow.webContents.executeJavaScript(`
+            (() => {
+                const p = {
+                    siteType: 'server-rendered',
+                    techStack: [],
+                    menuTree: {},
+                    urlPatterns: [],
+                    pageEstimate: 0,
+                    apiCount: ${apiTraffic.length},
+                    crawlConfig: {
+                        maxDepth: 2,
+                        maxPages: 50,
+                        excludePatterns: ['login', 'cart', 'order', 'member', 'mypage', 'auth', 'checkout']
+                    }
+                };
+
+                if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__ || document.querySelector('[data-reactroot]')) p.techStack.push('React');
+                if (window.__VUE__ || document.querySelector('[data-v-app]')) p.techStack.push('Vue');
+                if (window.__NUXT__) { p.techStack.push('Nuxt.js'); p.siteType = 'spa'; }
+                if (window.__NEXT_DATA__) { p.techStack.push('Next.js'); p.siteType = 'spa'; }
+                if (window.angular || document.querySelector('[ng-app]')) p.techStack.push('Angular');
+                if (window.jQuery) p.techStack.push('jQuery');
+
+                const navLinks = Array.from(document.querySelectorAll('nav a, header a, .menu a, .gnb a'));
+                navLinks.forEach(a => {
+                    if (a.href && a.innerText.trim()) {
+                        const text = a.innerText.trim().replace(/\\n/g, ' ');
+                        if (text.length < 20) p.menuTree[text] = a.href;
+                    }
+                });
+
+                const allLinks = Array.from(document.querySelectorAll('a')).map(a => a.href).filter(h => h && h.startsWith('http'));
+                const uniqueLinks = [...new Set(allLinks)];
+                p.pageEstimate = Math.max(10, uniqueLinks.length * 3);
+
+                const patterns = new Set();
+                uniqueLinks.forEach(l => {
+                    try {
+                        const u = new URL(l);
+                        if (u.origin === window.location.origin) {
+                            patterns.add(u.pathname.split('/').slice(0, 2).join('/'));
+                        }
+                    } catch(e){}
+                });
+                p.urlPatterns = Array.from(patterns).filter(Boolean).slice(0, 10);
+
+                if (p.urlPatterns.some(pt => pt.includes('board') || pt.includes('bbs') || pt.includes('forum'))) {
+                    p.siteType = 'board-heavy';
+                }
+
+                return p;
+            })();
+        `);
+
+        sendLog(`분석 완료 (API 엔드포인트 ${profile.apiCount}개 탐지)`);
+        
+        return { 
+            success: true, 
+            profile,
+            apiSpecPath: outDir 
+        };
+    } catch (error) {
+        return { success: false, message: error.message };
+    } finally {
+        if (offscreenWindow && !offscreenWindow.isDestroyed()) {
+            if (debuggerAttached) try { offscreenWindow.webContents.debugger.detach(); } catch(e){}
+            offscreenWindow.destroy();
+        }
+    }
+});
 
 // v3.3: Multi-page Support (Sequential Extract)
 ipcMain.handle('extract-multi', async (event, config) => {

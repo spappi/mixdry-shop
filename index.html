@@ -43,7 +43,16 @@
             <h2>웹 구조 완벽 추출 및 클론</h2>
             <div class="form-group">
                 <label>타겟 쇼핑몰 URL</label>
-                <input type="url" id="extract-url" placeholder="https://example.com" value="https://example.com">
+                <div style="display: flex; gap: 10px;">
+                    <input type="url" id="extract-url" placeholder="https://example.com" value="https://example.com" style="flex: 1;">
+                    <button class="primary-btn" id="btn-analyze-site" style="background-color: #2196F3;">사이트 분석</button>
+                </div>
+            </div>
+            
+            <div id="analyze-result-panel" style="display: none; background: #1a1a1a; padding: 15px; margin-bottom: 15px; border-radius: 5px; border: 1px solid #444;">
+                <h4 style="margin-top: 0; color: var(--accent-color);">분석 프로파일</h4>
+                <div id="analyze-summary" style="font-size: 13px; margin-bottom: 10px; line-height: 1.5;"></div>
+                <button class="primary-btn open-folder-btn" id="btn-open-api-spec" style="background-color: #ff9800; display: inline-block; margin-bottom: 10px;">API 스펙 파일 열기</button>
             </div>
             <!-- v3.3 Multi-page options -->
             <div style="margin-top: 10px; margin-bottom: 10px;">

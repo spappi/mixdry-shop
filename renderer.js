@@ -108,6 +108,66 @@ function renderExtractResult(data) {
     `;
 }
 
+const btnAnalyze = document.getElementById('btn-analyze-site');
+const analyzePanel = document.getElementById('analyze-result-panel');
+const analyzeSummary = document.getElementById('analyze-summary');
+const btnOpenApiSpec = document.getElementById('btn-open-api-spec');
+let lastApiSpecPath = null;
+
+if (btnAnalyze) {
+    btnAnalyze.addEventListener('click', async () => {
+        const url = document.getElementById('extract-url').value;
+        if (!url) return appendLog('URL을 입력해주세요.', 'error');
+        
+        btnAnalyze.disabled = true;
+        btnAnalyze.textContent = '분석 중...';
+        analyzePanel.style.display = 'block';
+        analyzeSummary.innerHTML = '사이트 트래픽 및 구조 분석을 진행 중입니다 (약 5~10초 소요)...';
+        appendLog(`[분석] ${url} 프로파일링 및 API 트래픽 캡처 시작...`);
+        
+        try {
+            const res = await window.api.analyzeSite({ url, outDirBase: document.getElementById('output-dir').value });
+            if (res.success) {
+                const p = res.profile;
+                analyzeSummary.innerHTML = `
+                    <strong>유형:</strong> ${p.siteType} <br>
+                    <strong>예상 스택:</strong> ${p.techStack.join(', ') || '알 수 없음'} <br>
+                    <strong>예상 페이지 수:</strong> 약 ${p.pageEstimate} 페이지 <br>
+                    <strong>탐지된 API:</strong> ${p.apiCount} 개 엔드포인트 <br>
+                    <br><em>* 크롤 설정이 자동으로 권장값으로 채워졌습니다.</em>
+                `;
+                lastApiSpecPath = res.apiSpecPath;
+                appendLog(`[분석 완료] API 스펙 생성 완료: ${res.apiSpecPath}`, 'info');
+                
+                document.getElementById('chk-multipage').checked = true;
+                document.getElementById('multi-settings').style.display = 'block';
+                document.getElementById('btn-run-extract').style.display = 'none';
+                
+                if (p.crawlConfig) {
+                    if (p.crawlConfig.maxDepth) document.getElementById('inp-depth').value = p.crawlConfig.maxDepth;
+                    if (p.crawlConfig.maxPages) document.getElementById('inp-maxpages').value = p.crawlConfig.maxPages;
+                    if (p.crawlConfig.excludePatterns) document.getElementById('inp-exclude').value = p.crawlConfig.excludePatterns.join(', ');
+                }
+            } else {
+                analyzeSummary.innerHTML = `<span style="color:red;">분석 실패: ${res.message}</span>`;
+                appendLog(`분석 에러: ${res.message}`, 'error');
+            }
+        } catch (e) {
+            analyzeSummary.innerHTML = `<span style="color:red;">IPC 에러: ${e.message}</span>`;
+            appendLog(`IPC 에러: ${e.message}`, 'error');
+        } finally {
+            btnAnalyze.disabled = false;
+            btnAnalyze.textContent = '사이트 분석';
+        }
+    });
+}
+
+if (btnOpenApiSpec) {
+    btnOpenApiSpec.addEventListener('click', () => {
+        if (lastApiSpecPath) window.api.openFolder(lastApiSpecPath);
+    });
+}
+
 const chkMulti = document.getElementById('chk-multipage');
 const multiSettings = document.getElementById('multi-settings');
 const btnExtractSingle = document.getElementById('btn-run-extract');
