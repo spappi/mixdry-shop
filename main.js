@@ -645,3 +645,321 @@ app.listen(PORT, () => {
         return { success: false, message: error.message };
     }
 });
+// v3.3: Multi-page Support (Crawl Links)
+ipcMain.handle('crawl-links', async (event, config) => {
+    const { url, maxDepth, maxPages, excludePatterns, paramBlacklist } = config;
+    let offscreenWindow = null;
+    const sendLog = (msg, type='info') => event.sender.send('log', msg, type);
+
+    try {
+        sendLog('링크 수집용 브라우저 시작...');
+        offscreenWindow = new BrowserWindow({
+            show: false,
+            webPreferences: { offscreen: true, nodeIntegration: false, contextIsolation: true }
+        });
+
+        const normalizeUrl = (href, base) => {
+            try {
+                const u = new URL(href, base);
+                u.hash = '';
+                paramBlacklist.forEach(p => u.searchParams.delete(p.trim()));
+                let s = u.toString();
+                if (s.endsWith('/') && s.length > u.origin.length + 1) s = s.slice(0, -1);
+                return s;
+            } catch(e) { return null; }
+        };
+
+        const isExcluded = (u) => {
+            const s = u.toLowerCase();
+            return excludePatterns.some(p => p.trim() && s.includes(p.trim().toLowerCase()));
+        };
+
+        const startNormalized = normalizeUrl(url, url);
+        if(!startNormalized) throw new Error("유효하지 않은 시작 URL입니다.");
+        
+        const queue = [{ url: startNormalized, depth: 0 }];
+        const visited = new Set([startNormalized]);
+        const results = [{ url: startNormalized, depth: 0 }];
+
+        while (queue.length > 0 && visited.size < maxPages) {
+            const current = queue.shift();
+            sendLog(`[링크 수집 중] (${visited.size}개 확인됨) 깊이:${current.depth} - ${current.url}`);
+            
+            try {
+                await offscreenWindow.loadURL(current.url, { waitUntil: 'domcontentloaded' });
+                await new Promise(r => setTimeout(r, 1000));
+            } catch (e) {
+                sendLog(`로딩 실패 (무시됨): ${current.url}`, 'error');
+                continue;
+            }
+            
+            if (current.depth >= maxDepth) continue;
+
+            const hrefs = await offscreenWindow.webContents.executeJavaScript(`
+                Array.from(document.querySelectorAll('a')).map(a => a.href).filter(h => h && !h.startsWith('javascript:'))
+            `);
+
+            for (const href of hrefs) {
+                const norm = normalizeUrl(href, current.url);
+                if (!norm) continue;
+                try {
+                    const parsed = new URL(norm);
+                    const baseParsed = new URL(url);
+                    if (parsed.origin !== baseParsed.origin) continue; // sameOriginOnly
+                } catch(e) { continue; }
+
+                if (isExcluded(norm)) continue;
+
+                if (!visited.has(norm)) {
+                    visited.add(norm);
+                    results.push({ url: norm, depth: current.depth + 1 });
+                    queue.push({ url: norm, depth: current.depth + 1 });
+                    if (visited.size >= maxPages) break;
+                }
+            }
+        }
+
+        sendLog(`링크 수집 완료: 총 ${results.length}개 페이지 발견.`);
+        return { success: true, data: results };
+    } catch (e) {
+        return { success: false, message: e.message };
+    } finally {
+        if (offscreenWindow && !offscreenWindow.isDestroyed()) offscreenWindow.destroy();
+    }
+});
+
+// v3.3: Multi-page Support (Sequential Extract)
+ipcMain.handle('extract-multi', async (event, config) => {
+    const { urls, outDirBase, paramBlacklist } = config; 
+    let offscreenWindow = null;
+    let debuggerAttached = false;
+    const sendLog = (msg, type='info') => event.sender.send('log', msg, type);
+
+    try {
+        if (!urls || urls.length === 0) throw new Error("추출할 URL이 없습니다.");
+        const domain = new URL(urls[0].url).hostname;
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const outDir = path.join(outDirBase, `clone_${domain}_multi_${timestamp}`);
+        
+        fs.mkdirSync(path.join(outDir, 'css'), { recursive: true });
+        fs.mkdirSync(path.join(outDir, 'assets'), { recursive: true });
+        fs.mkdirSync(path.join(outDir, 'pages'), { recursive: true });
+
+        const urlMap = {};
+        urls.forEach((u, i) => {
+            if (i === 0) urlMap[u.url] = 'index.html';
+            else {
+                const parsed = new URL(u.url);
+                let name = parsed.pathname.split('/').filter(Boolean).pop() || 'page';
+                parsed.searchParams.forEach((val) => { name += `_${val}`; });
+                name = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+                urlMap[u.url] = `pages/${name}_${i}.html`;
+            }
+        });
+        fs.writeFileSync(path.join(outDir, 'urlmap.json'), JSON.stringify(urlMap, null, 2));
+
+        offscreenWindow = new BrowserWindow({
+            show: false,
+            webPreferences: { offscreen: true, nodeIntegration: false, contextIsolation: true }
+        });
+
+        const capturedBodies = new Map();
+        const reqOriginalUrl = new Map();
+        const reqFinalUrl = new Map();
+
+        try {
+            if (offscreenWindow.webContents.debugger.isAttached()) offscreenWindow.webContents.debugger.detach();
+            offscreenWindow.webContents.debugger.attach('1.3');
+            await offscreenWindow.webContents.debugger.sendCommand('Network.enable');
+            debuggerAttached = true;
+            sendLog('전역 디버거 부착 완료 (다중 페이지 자동 캡처)');
+            
+            offscreenWindow.webContents.debugger.on('message', async (e, method, params) => {
+                try {
+                    if (method === 'Network.requestWillBeSent') {
+                        reqOriginalUrl.set(params.requestId, params.request.url);
+                    } else if (method === 'Network.responseReceived') {
+                        reqFinalUrl.set(params.requestId, params.response.url);
+                    } else if (method === 'Network.loadingFinished') {
+                        const requestId = params.requestId;
+                        const u_arr = [reqOriginalUrl.get(requestId), reqFinalUrl.get(requestId)].filter(Boolean);
+                        try {
+                            const { body, base64Encoded } = await offscreenWindow.webContents.debugger.sendCommand(
+                                'Network.getResponseBody', { requestId }
+                            );
+                            const buf = base64Encoded ? Buffer.from(body, 'base64') : Buffer.from(body, 'utf8');
+                            for (const u of u_arr) capturedBodies.set(u, buf);
+                        } catch (err) {}
+                        reqOriginalUrl.delete(requestId);
+                        reqFinalUrl.delete(requestId);
+                    }
+                } catch (err) {}
+            });
+        } catch (e) {
+            sendLog('디버거 부착 실패: ' + e.message, 'error');
+        }
+
+        const globalCssMap = {};
+        const globalImgMap = {};
+        let nextCssId = 0;
+        let nextImgId = 0;
+        let nextInlineId = 0;
+
+        const manifest = { targetUrl: urls[0].url, extractedAt: new Date().toISOString(), pages: [], failedPages: [], assets: [] };
+
+        for (let i = 0; i < urls.length; i++) {
+            const currentUrl = urls[i].url;
+            const localPath = urlMap[currentUrl];
+            sendLog(`[순차 추출] (${i+1}/${urls.length}) ${currentUrl}`);
+
+            try {
+                await offscreenWindow.loadURL(currentUrl, { waitUntil: 'domcontentloaded' });
+                await new Promise(r => setTimeout(r, 1500)); // delayMs
+
+                if (i === 0) {
+                    const image = await offscreenWindow.webContents.capturePage();
+                    fs.writeFileSync(path.join(outDir, 'screenshot.png'), image.toPNG());
+                }
+
+                const pageData = await offscreenWindow.webContents.executeJavaScript(`
+                    (() => {
+                        const urlMap = ${JSON.stringify(urlMap)};
+                        const paramBlacklist = ${JSON.stringify(paramBlacklist)};
+                        const currentLocalPath = "${localPath}";
+                        const prefix = currentLocalPath === 'index.html' ? './' : '../';
+                        
+                        function normalize(href) {
+                            try {
+                                const u = new URL(href, window.location.href);
+                                u.hash = '';
+                                paramBlacklist.forEach(p => u.searchParams.delete(p.trim()));
+                                let s = u.toString();
+                                if (s.endsWith('/') && s.length > u.origin.length + 1) s = s.slice(0, -1);
+                                return s;
+                            } catch(e) { return href; }
+                        }
+
+                        document.querySelectorAll('a').forEach(a => {
+                            if (!a.href || a.href.startsWith('javascript:')) return;
+                            const norm = normalize(a.href);
+                            if (urlMap[norm]) {
+                                const to = urlMap[norm];
+                                if (currentLocalPath === 'index.html') a.href = './' + to;
+                                else if (to === 'index.html') a.href = '../index.html';
+                                else a.href = './' + to.replace('pages/', '');
+                            } else {
+                                a.target = "_blank";
+                            }
+                        });
+
+                        const globalCssMap = ${JSON.stringify(globalCssMap)};
+                        const globalImgMap = ${JSON.stringify(globalImgMap)};
+                        let nextCssId = ${nextCssId};
+                        let nextImgId = ${nextImgId};
+                        let nextInlineId = ${nextInlineId};
+
+                        const newAssets = [];
+                        
+                        document.querySelectorAll('link[rel="stylesheet"]').forEach(el => {
+                            if (el.href && !el.href.startsWith('data:')) {
+                                let lp = globalCssMap[el.href];
+                                if (!lp) {
+                                    lp = 'css/style-' + (nextCssId++) + '.css';
+                                    newAssets.push({ url: el.href, localPath: lp, type: 'css' });
+                                }
+                                el.href = prefix + lp;
+                            }
+                        });
+
+                        document.querySelectorAll('img, source').forEach(el => {
+                            if (el.src && !el.src.startsWith('data:')) {
+                                let lp = globalImgMap[el.src];
+                                if (!lp) {
+                                    const ext = el.src.split('.').pop().split('?')[0] || 'png';
+                                    const safeExt = /^[a-zA-Z0-9]+$/.test(ext) ? ext : 'png';
+                                    lp = 'assets/img-' + (nextImgId++) + '.' + safeExt;
+                                    newAssets.push({ url: el.src, localPath: lp, type: 'asset' });
+                                }
+                                el.src = prefix + lp;
+                            }
+                            if (el.srcset) el.removeAttribute('srcset');
+                        });
+
+                        document.querySelectorAll('style').forEach(el => {
+                            const lp = 'css/inline-' + (nextInlineId++) + '.css';
+                            newAssets.push({ text: el.innerHTML, localPath: lp, type: 'inline-css' });
+                            const link = document.createElement('link');
+                            link.rel = 'stylesheet';
+                            link.href = prefix + lp;
+                            el.replaceWith(link);
+                        });
+
+                        document.querySelectorAll('script, iframe, noscript').forEach(s => s.remove());
+                        const iter = document.createNodeIterator(document, NodeFilter.SHOW_COMMENT, null, false);
+                        let node;
+                        const comments = [];
+                        while(node = iter.nextNode()) comments.push(node);
+                        comments.forEach(c => c.remove());
+
+                        return {
+                            html: document.documentElement.outerHTML,
+                            newAssets,
+                            nextCssId, nextImgId, nextInlineId
+                        };
+                    })();
+                `);
+
+                nextCssId = pageData.nextCssId;
+                nextImgId = pageData.nextImgId;
+                nextInlineId = pageData.nextInlineId;
+
+                for (const item of pageData.newAssets) {
+                    if (item.type === 'css') globalCssMap[item.url] = item.localPath;
+                    if (item.type === 'asset') globalImgMap[item.url] = item.localPath;
+
+                    try {
+                        if (item.type === 'inline-css') {
+                            fs.writeFileSync(path.join(outDir, item.localPath), item.text);
+                        } else {
+                            const buf = capturedBodies.get(item.url);
+                            if (buf) {
+                                fs.writeFileSync(path.join(outDir, item.localPath), buf);
+                                capturedBodies.delete(item.url); 
+                            } else {
+                                sendLog(`[에셋 바디 없음] ${item.url}`, 'error');
+                            }
+                        }
+                        manifest.assets.push(item.localPath);
+                    } catch (e) {
+                        sendLog(`[에셋 실패] ${item.localPath} - ${e.message}`, 'error');
+                    }
+                }
+
+                fs.writeFileSync(path.join(outDir, localPath), '<!DOCTYPE html>\n<html>\n' + pageData.html + '\n</html>');
+                manifest.pages.push(currentUrl);
+
+            } catch (e) {
+                sendLog(`[페이지 실패] ${currentUrl} - ${e.message}`, 'error');
+                manifest.failedPages.push({ url: currentUrl, error: e.message });
+            }
+        }
+
+        fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+        fs.writeFileSync(path.join(outDir, 'README.md'), `# Multi-page Clone of ${domain}\n\nOpen \`index.html\` to view the cloned structure.\n\nTotal pages: ${manifest.pages.length}`);
+
+        sendLog('멀티페이지 클론 순차 추출 및 조립 완료!');
+
+        return { 
+            success: true, 
+            message: `[완료] 총 ${manifest.pages.length}페이지 클론 성공`, 
+            data: { clonePath: outDir, assets: manifest.assets } 
+        };
+    } catch (error) {
+        return { success: false, message: error.message };
+    } finally {
+        if (offscreenWindow && !offscreenWindow.isDestroyed()) {
+            if (debuggerAttached) try { offscreenWindow.webContents.debugger.detach(); } catch(e){}
+            offscreenWindow.destroy();
+        }
+    }
+});

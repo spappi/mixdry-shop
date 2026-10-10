@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer, webFrame, clipboard } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
     extractFrontend: (config) => ipcRenderer.invoke('extract-frontend', config),
+    crawlLinks: (config) => ipcRenderer.invoke('crawl-links', config),
+    extractMulti: (config) => ipcRenderer.invoke('extract-multi', config),
     scaffoldBackend: (config) => ipcRenderer.invoke('scaffold-backend', config),
     setZoom: (factor) => webFrame.setZoomFactor(factor),
     onLog: (callback) => ipcRenderer.on('log', (event, msg, type) => callback(msg, type)),

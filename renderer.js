@@ -108,6 +108,110 @@ function renderExtractResult(data) {
     `;
 }
 
+const chkMulti = document.getElementById('chk-multipage');
+const multiSettings = document.getElementById('multi-settings');
+const btnExtractSingle = document.getElementById('btn-run-extract');
+const btnCrawl = document.getElementById('btn-crawl');
+const btnExtractMulti = document.getElementById('btn-extract-multi');
+const crawlResults = document.getElementById('crawl-results');
+const crawlStatus = document.getElementById('crawl-status');
+
+let collectedUrls = [];
+
+if (chkMulti) {
+    chkMulti.addEventListener('change', (e) => {
+        if (e.target.checked) {
+            multiSettings.style.display = 'block';
+            btnExtractSingle.style.display = 'none';
+        } else {
+            multiSettings.style.display = 'none';
+            btnExtractSingle.style.display = 'inline-block';
+        }
+    });
+
+    btnCrawl.addEventListener('click', async () => {
+        const url = document.getElementById('extract-url').value;
+        if (!url) return appendLog('URL을 입력해주세요.', 'error');
+        
+        btnCrawl.disabled = true;
+        btnCrawl.textContent = '수집 중...';
+        appendLog(`멀티페이지 링크 수집 시작: ${url}...`);
+        
+        const config = {
+            url,
+            maxDepth: parseInt(document.getElementById('inp-depth').value) || 2,
+            maxPages: parseInt(document.getElementById('inp-maxpages').value) || 100,
+            excludePatterns: document.getElementById('inp-exclude').value.split(',').map(s=>s.trim()).filter(Boolean),
+            paramBlacklist: document.getElementById('inp-param-ignore').value.split(',').map(s=>s.trim()).filter(Boolean)
+        };
+
+        try {
+            const res = await window.api.crawlLinks(config);
+            if (res.success) {
+                collectedUrls = res.data;
+                crawlResults.style.display = 'block';
+                crawlStatus.textContent = `총 ${collectedUrls.length}개의 페이지가 수집되었습니다.`;
+                appendLog(`링크 수집 완료: ${collectedUrls.length}개 발견`);
+            } else {
+                appendLog(`링크 수집 실패: ${res.message}`, 'error');
+            }
+        } catch (e) {
+            appendLog(`IPC 에러: ${e.message}`, 'error');
+        } finally {
+            btnCrawl.disabled = false;
+            btnCrawl.textContent = '링크 수집';
+        }
+    });
+
+    btnExtractMulti.addEventListener('click', async () => {
+        if (!collectedUrls.length) return;
+        btnExtractMulti.disabled = true;
+        btnExtractMulti.textContent = '추출 중...';
+        
+        const config = {
+            urls: collectedUrls,
+            outDirBase: document.getElementById('output-dir').value,
+            paramBlacklist: document.getElementById('inp-param-ignore').value.split(',').map(s=>s.trim()).filter(Boolean)
+        };
+
+        appendLog(`멀티페이지 순차 추출 시작 (${collectedUrls.length}개 페이지)...`);
+        document.getElementById('extract-result').textContent = '다중 페이지 추출 진행 중...';
+        lastTargetUrl = collectedUrls[0].url;
+
+        try {
+            const res = await window.api.extractMulti(config);
+            if (res.success) {
+                appendLog(res.message, 'info');
+                
+                if (res.data) {
+                    extractedTokens = res.data;
+                    lastExtractPath = res.data.clonePath;
+                    
+                    document.getElementById('extract-result').innerHTML = `
+                        <div style="margin-bottom: 10px;">
+                            <strong>[멀티페이지 추출 요약]</strong><br>
+                            - 추출 완료된 클론 경로: <span style="color:var(--accent-color)">${res.data.clonePath}</span><br>
+                            - 수집된 공용 에셋 수: ${(res.data.assets || []).length} 개<br>
+                        </div>
+                    `;
+
+                    document.getElementById('btn-open-clone-folder').style.display = 'inline-block';
+                    document.getElementById('btn-open-clone-folder').onclick = () => window.api.openFolder(lastExtractPath);
+                    document.getElementById('btn-run-clone').style.display = 'inline-block';
+                    document.getElementById('btn-run-clone').onclick = () => window.api.openClone(lastExtractPath);
+                }
+            } else {
+                appendLog(`멀티페이지 추출 에러: ${res.message}`, 'error');
+            }
+        } catch (e) {
+            appendLog(`IPC 에러: ${e.message}`, 'error');
+        } finally {
+            btnExtractMulti.disabled = false;
+            btnExtractMulti.textContent = '수집된 페이지 추출 시작';
+        }
+    });
+}
+
 document.getElementById('btn-run-extract').addEventListener('click', async () => {
     const url = document.getElementById('extract-url').value;
     if (!url) return appendLog('URL을 입력해주세요.', 'error');
