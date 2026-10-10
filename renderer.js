@@ -115,6 +115,18 @@ function renderExtractResult(data) {
             - 주요 여백 (빈도순): ${spacing}<br>
             - 수집된 에셋 수: ${(data.assets || []).length} 개<br>
             - 다운로드 실패 에셋: ${(data.failedAssets || []).length} 개<br>
+            - 식별된 백엔드 API (JS 분석): ${(data.endpoints || []).length} 개<br>
+        </div>
+        <div style="margin-bottom: 10px; padding: 10px; background: #222; border: 1px solid #555; border-radius: 4px;">
+            <strong style="color: #4CAF50;">[JS 백엔드 스텁 관리]</strong><br>
+            <div style="max-height: 150px; overflow-y: auto; margin: 10px 0; font-family: monospace; font-size: 11px;">
+                ${(data.endpoints || []).map(ep => `<div><span style="color:#2196F3;">${ep.method}</span> ${ep.url} <span style="color:#777">(${ep.source})</span></div>`).join('')}
+                ${!(data.endpoints || []).length ? '<span style="color:#777;">발견된 API 엔드포인트가 없습니다.</span>' : ''}
+            </div>
+            <label style="font-size: 12px; display: flex; align-items: center; gap: 5px; margin-bottom: 10px;">
+                <input type="checkbox" id="chk-apply-stubs" checked> 백엔드 호출 스텁(Stub) 교체 활성화
+            </label>
+            <button class="primary-btn" id="btn-regen-stubs" style="background-color: #ff9800; font-size: 12px; padding: 4px 8px;" onclick="alert('스텁 재생성 기능은 현재 추출(Extract) 시 자동으로 수행됩니다. 세부 스텁 편집 기능은 추후 업데이트 예정입니다.')">스텁 설정 업데이트</button>
         </div>
         <details class="details-panel">
             <summary>자세한 JSON 구조 펼치기</summary>

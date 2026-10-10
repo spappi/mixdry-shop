@@ -1175,15 +1175,20 @@ ipcMain.handle('extract-multi', async (event, config) => {
 
         const globalCssMap = {};
         const globalImgMap = {};
+        const globalJsMap = {};
         let nextCssId = 0;
         let nextImgId = 0;
         let nextInlineId = 0;
+        let nextJsId = 0;
+        let nextInlineJsId = 0;
         
         const manifest = { name: cName, targetUrl: urls[0].url, extractedAt: new Date().toISOString(), pages: [], failedPages: [], assets: [], duplicatePages: [] };
         const contentHashes = new Map();
         const failedDetails = [];
         const loggedFailures = new Set();
         const deadLinks = [];
+        const backendEndpoints = [];
+        const jsManifest = [];
 
         for (let i = 0; i < urls.length; i++) {
             if (cancelRequested) {
@@ -1253,9 +1258,12 @@ ipcMain.handle('extract-multi', async (event, config) => {
 
                         const globalCssMap = ${JSON.stringify(globalCssMap)};
                         const globalImgMap = ${JSON.stringify(globalImgMap)};
+                        const globalJsMap = ${JSON.stringify(globalJsMap)};
                         let nextCssId = ${nextCssId};
                         let nextImgId = ${nextImgId};
                         let nextInlineId = ${nextInlineId};
+                        let nextJsId = ${nextJsId};
+                        let nextInlineJsId = ${nextInlineJsId};
 
                         const newAssets = [];
                         
@@ -1411,7 +1419,28 @@ ipcMain.handle('extract-multi', async (event, config) => {
                             document.body.appendChild(script);
                         }
 
-                        document.querySelectorAll('script:not([src$="interactions.js"]), iframe, noscript').forEach(s => s.remove());
+                        document.querySelectorAll('script').forEach(el => {
+                            if (el.src && !el.src.startsWith('data:')) {
+                                let lp = globalJsMap[el.src];
+                                if (!lp) {
+                                    const ext = el.src.split('.').pop().split('?')[0] || 'js';
+                                    const safeExt = /^[a-zA-Z0-9]+$/.test(ext) ? ext : 'js';
+                                    lp = 'js/script-' + (nextJsId++) + '.' + safeExt;
+                                    newAssets.push({ url: el.src, localPath: lp, type: 'js' });
+                                }
+                                el.src = prefix + lp;
+                                el.removeAttribute('integrity');
+                                el.removeAttribute('crossorigin');
+                            } else if (!el.src && el.textContent.trim()) {
+                                const lp = 'js/inline-' + (nextInlineJsId++) + '.js';
+                                newAssets.push({ text: el.textContent, localPath: lp, type: 'inline-js' });
+                                const newScript = document.createElement('script');
+                                newScript.src = prefix + lp;
+                                el.replaceWith(newScript);
+                            }
+                        });
+
+                        document.querySelectorAll('iframe, noscript').forEach(s => s.remove());
                         const iter = document.createNodeIterator(document, NodeFilter.SHOW_COMMENT, null, false);
                         let node;
                         const comments = [];
@@ -1444,6 +1473,8 @@ ipcMain.handle('extract-multi', async (event, config) => {
                             nextCssId,
                             nextImgId,
                             nextInlineId,
+                            nextJsId,
+                            nextInlineJsId,
                             textContent: document.body.textContent,
                             tokens, layout, components,
                             interactions: detectCounts
@@ -1484,6 +1515,8 @@ ipcMain.handle('extract-multi', async (event, config) => {
                 nextCssId = pageData.nextCssId;
                 nextImgId = pageData.nextImgId;
                 nextInlineId = pageData.nextInlineId;
+                nextJsId = pageData.nextJsId;
+                nextInlineJsId = pageData.nextInlineJsId;
                 
                 const crypto = require('crypto');
                 const hash = crypto.createHash('sha256').update(pageData.textContent).digest('hex');
@@ -1495,12 +1528,47 @@ ipcMain.handle('extract-multi', async (event, config) => {
                 }
                 contentHashes.set(hash, localPath);
 
+                const extractBackendCalls = (code, sourceName) => {
+                    const calls = [];
+                    const re = /(?:\$\.(ajax|post|get|getJSON)|fetch)\s*\(\s*['"`]([^'"`]+)['"`]/g;
+                    let match;
+                    while ((match = re.exec(code)) !== null) {
+                        const method = match[1] ? (match[1].toUpperCase() === 'AJAX' ? 'UNKNOWN' : match[1].toUpperCase()) : 'GET/POST';
+                        const url = match[2];
+                        if (url.includes('.php') || url.includes('/api/') || url.includes('?')) {
+                            calls.push({ url, method, params: ["..."], source: sourceName, responseFields: [] });
+                        }
+                    }
+                    return calls;
+                };
+
+                const stubBackendCalls = (code) => {
+                    return code.replace(/(?:\$\.(post|get|getJSON))\s*\(\s*(['"`][^'"`]+['"`])\s*,\s*([^,]+)\s*,\s*([^\)]+)\)/g, (m, method, url, data, callback) => {
+                        if (url.includes('.php') || url.includes('/api/') || url.includes('?')) {
+                            return `(function(){console.warn('[STUB] Backend call intercepted:', ${url}); try { ${callback}({ total_price: '99,000원 (스텁)', goods_price_vat: '108,900원 (스텁)' }); } catch(e){} })()`;
+                        }
+                        return m;
+                    });
+                };
+
                 for (const item of pageData.newAssets) {
                     try {
                         if (item.type === 'inline-css') {
                             fs.writeFileSync(path.join(outDir, item.localPath), item.text);
                             manifest.assets.push(item.localPath);
                             assetMap[item.localPath] = { url: item.url, status: 'ok' };
+                        } else if (item.type === 'inline-js') {
+                            const calls = extractBackendCalls(item.text, 'inline-script');
+                            if (calls.length > 0) backendEndpoints.push(...calls);
+                            const stubbed = stubBackendCalls(item.text);
+                            
+                            fs.mkdirSync(path.join(outDir, 'original', path.dirname(item.localPath)), { recursive: true });
+                            fs.writeFileSync(path.join(outDir, 'original', item.localPath), item.text);
+                            fs.writeFileSync(path.join(outDir, item.localPath), stubbed);
+                            
+                            manifest.assets.push(item.localPath);
+                            assetMap[item.localPath] = { url: 'inline:' + item.localPath, status: 'ok' };
+                            jsManifest.push({ path: item.localPath, type: 'inline', endpoints: calls.length });
                         } else {
                             const decUrl = decodeURIComponent(item.url);
                             let bodyData = capturedBodies.get(item.url) || capturedBodies.get(decUrl);
@@ -1601,6 +1669,19 @@ ipcMain.handle('extract-multi', async (event, config) => {
                                     fs.writeFileSync(path.join(outDir, item.localPath), cssText);
                                     globalCssMap[item.url] = item.localPath;
                                     assetMap[item.localPath] = { url: item.url, status: 'ok' };
+                                } else if (item.type === 'js') {
+                                    let jsText = bodyData.buf.toString('utf8');
+                                    const calls = extractBackendCalls(jsText, item.url);
+                                    if (calls.length > 0) backendEndpoints.push(...calls);
+                                    const stubbed = stubBackendCalls(jsText);
+
+                                    fs.mkdirSync(path.join(outDir, 'original', path.dirname(item.localPath)), { recursive: true });
+                                    fs.writeFileSync(path.join(outDir, 'original', item.localPath), bodyData.buf);
+                                    fs.writeFileSync(path.join(outDir, item.localPath), stubbed);
+
+                                    globalJsMap[item.url] = item.localPath;
+                                    assetMap[item.localPath] = { url: item.url, status: 'ok' };
+                                    jsManifest.push({ path: item.localPath, url: item.url, type: 'external', endpoints: calls.length });
                                 } else {
                                     fs.writeFileSync(path.join(outDir, item.localPath), bodyData.buf);
                                     globalImgMap[item.url] = item.localPath;
@@ -1668,6 +1749,8 @@ ipcMain.handle('extract-multi', async (event, config) => {
             }
         }
         fs.writeFileSync(path.join(outDir, 'urlmap.json'), JSON.stringify(urlMap, null, 2));
+        fs.writeFileSync(path.join(outDir, 'js-manifest.json'), JSON.stringify(jsManifest, null, 2));
+        fs.writeFileSync(path.join(outDir, 'backend-raw.json'), JSON.stringify({ endpoints: backendEndpoints, forms: [] }, null, 2));
         fs.writeFileSync(path.join(outDir, 'assetMap.json'), JSON.stringify(assetMap, null, 2));
         fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
         fs.writeFileSync(path.join(outDir, 'README.md'), `# Multi-page Clone of ${domain}\n\nOpen \`index.html\` to view the cloned structure.\n\nTotal pages: ${manifest.pages.length}`);
@@ -1711,7 +1794,7 @@ ipcMain.handle('extract-multi', async (event, config) => {
         return { 
             success: true, 
             message: `[완료] 총 ${manifest.pages.length}페이지 클론 성공`, 
-            data: { clonePath: outDir, assets: manifest.assets, tokens: manifest.tokens, layout: manifest.layout, components: manifest.components } 
+            data: { clonePath: outDir, assets: manifest.assets, tokens: manifest.tokens, layout: manifest.layout, components: manifest.components, endpoints: backendEndpoints }
         };
     } catch (error) {
         return { success: false, message: error.message };

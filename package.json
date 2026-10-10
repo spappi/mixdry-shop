@@ -1,6 +1,6 @@
 {
   "name": "gjc-reversing-workbench",
-  "version": "4.4.6",
+  "version": "5.0.0",
   "description": "GJC Reverse Engineering Workbench",
   "main": "main.js",
   "scripts": {
