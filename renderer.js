@@ -532,7 +532,7 @@ async function loadClones() {
         clones.forEach((c, idx) => {
             const card = document.createElement('div');
             card.style = 'background: #1a1a1a; border: 1px solid #444; border-radius: 5px; overflow: hidden; display: flex; flex-direction: column; cursor: pointer;';
-            card.ondblclick = () => window.api.openCloneFolder(c.dir);
+            card.ondblclick = () => window.api.openClone(c.dir);
             
             const thumb = c.hasScreenshot ? `file:///${c.dir.replace(/\\/g, '/')}/screenshot.png` : '';
             const thumbHtml = thumb ? `<img src="${thumb}" style="width: 100%; height: 120px; object-fit: cover; border-bottom: 1px solid #333;">` : `<div style="width: 100%; height: 120px; background: #333; display: flex; align-items: center; justify-content: center; color: #777; border-bottom: 1px solid #222;">NO IMAGE</div>`;
