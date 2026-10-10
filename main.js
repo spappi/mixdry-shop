@@ -1188,6 +1188,7 @@ ipcMain.handle('extract-multi', async (event, config) => {
         const loggedFailures = new Set();
         const deadLinks = [];
         const backendEndpoints = [];
+        const backendForms = [];
         const jsManifest = [];
 
         for (let i = 0; i < urls.length; i++) {
@@ -1440,6 +1441,22 @@ ipcMain.handle('extract-multi', async (event, config) => {
                             }
                         });
 
+                        const formsData = [];
+                        document.querySelectorAll('form').forEach(f => {
+                            const action = f.getAttribute('action');
+                            if (action) {
+                                const inputs = Array.from(f.querySelectorAll('input, select, textarea')).map(i => i.name || i.id).filter(Boolean);
+                                formsData.push({ action, method: (f.getAttribute('method') || 'GET').toUpperCase(), fields: inputs });
+                            }
+                        });
+
+                        const onclickUrls = [];
+                        document.querySelectorAll('[onclick]').forEach(el => {
+                            const oc = el.getAttribute('onclick');
+                            const m = oc.match(/location\.href\s*=\s*['"]([^'"]+)['"]/);
+                            if (m) onclickUrls.push(m[1]);
+                        });
+
                         document.querySelectorAll('iframe, noscript').forEach(s => s.remove());
                         const iter = document.createNodeIterator(document, NodeFilter.SHOW_COMMENT, null, false);
                         let node;
@@ -1477,7 +1494,9 @@ ipcMain.handle('extract-multi', async (event, config) => {
                             nextInlineJsId,
                             textContent: document.body.textContent,
                             tokens, layout, components,
-                            interactions: detectCounts
+                            interactions: detectCounts,
+                            formsData,
+                            onclickUrls
                         };
                     })() };
                 } catch (err) {
@@ -1519,6 +1538,16 @@ ipcMain.handle('extract-multi', async (event, config) => {
                 nextInlineJsId = pageData.nextInlineJsId;
                 
                 const crypto = require('crypto');
+                if (pageData.formsData) {
+                    pageData.formsData.forEach(f => {
+                        backendForms.push({ ...f, source: currentLocalPath });
+                    });
+                }
+                if (pageData.onclickUrls) {
+                    pageData.onclickUrls.forEach(url => {
+                        backendEndpoints.push({ url, method: 'GET', params: [], source: currentLocalPath, type: url.match(/log|google-analytics|facebook\.net|tracker/i) ? 'tracking' : 'api' });
+                    });
+                }
                 const hash = crypto.createHash('sha256').update(pageData.textContent).digest('hex');
                 if (contentHashes.has(hash)) {
                     sendLog(`[콘텐츠 중복 제외] ${currentUrl}`);
@@ -1530,13 +1559,14 @@ ipcMain.handle('extract-multi', async (event, config) => {
 
                 const extractBackendCalls = (code, sourceName) => {
                     const calls = [];
-                    const re = /(?:\$\.(ajax|post|get|getJSON)|fetch)\s*\(\s*['"`]([^'"`]+)['"`]/g;
+                    const re = /(?:\$\.(ajax|post|get|getJSON)|fetch|axios\.(post|get)|(?:xhr|req|ajax)\.open)\s*\(\s*(?:['"`]([^'"`]+)['"`]|['"`][A-Z]+['"`]\s*,\s*['"`]([^'"`]+)['"`])/ig;
                     let match;
                     while ((match = re.exec(code)) !== null) {
-                        const method = match[1] ? (match[1].toUpperCase() === 'AJAX' ? 'UNKNOWN' : match[1].toUpperCase()) : 'GET/POST';
-                        const url = match[2];
-                        if (url.includes('.php') || url.includes('/api/') || url.includes('?')) {
-                            calls.push({ url, method, params: ["..."], source: sourceName, responseFields: [] });
+                        const methodStr = match[1] || match[2] || 'UNKNOWN';
+                        const method = methodStr.toUpperCase() === 'AJAX' ? 'UNKNOWN' : methodStr.toUpperCase();
+                        const url = match[3] || match[4];
+                        if (url && (url.includes('.php') || url.includes('/api/') || url.includes('?'))) {
+                            calls.push({ url, method, params: ["..."], source: sourceName, responseFields: [], type: url.match(/log|google-analytics|facebook\.net|tracker/i) ? 'tracking' : 'api' });
                         }
                     }
                     return calls;
@@ -1752,7 +1782,28 @@ ipcMain.handle('extract-multi', async (event, config) => {
         }
         fs.writeFileSync(path.join(outDir, 'urlmap.json'), JSON.stringify(urlMap, null, 2));
         fs.writeFileSync(path.join(outDir, 'js-manifest.json'), JSON.stringify(jsManifest, null, 2));
-        fs.writeFileSync(path.join(outDir, 'backend-raw.json'), JSON.stringify({ endpoints: backendEndpoints, forms: [] }, null, 2));
+        const dedupedEndpoints = [];
+        const epMap = new Map();
+        backendEndpoints.forEach(ep => {
+            const key = ep.method + '|' + ep.url;
+            if (!epMap.has(key)) {
+                epMap.set(key, { ...ep, sources: new Set([ep.source]) });
+            } else {
+                epMap.get(key).sources.add(ep.source);
+            }
+        });
+        epMap.forEach(ep => {
+            ep.sources = Array.from(ep.sources);
+            delete ep.source;
+            dedupedEndpoints.push(ep);
+        });
+        dedupedEndpoints.sort((a, b) => {
+            if (a.type === 'api' && b.type === 'tracking') return -1;
+            if (a.type === 'tracking' && b.type === 'api') return 1;
+            return 0;
+        });
+
+        fs.writeFileSync(path.join(outDir, 'backend-raw.json'), JSON.stringify({ endpoints: dedupedEndpoints, forms: backendForms }, null, 2));
         fs.writeFileSync(path.join(outDir, 'assetMap.json'), JSON.stringify(assetMap, null, 2));
         fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
         fs.writeFileSync(path.join(outDir, 'README.md'), `# Multi-page Clone of ${domain}\n\nOpen \`index.html\` to view the cloned structure.\n\nTotal pages: ${manifest.pages.length}`);
@@ -1796,7 +1847,7 @@ ipcMain.handle('extract-multi', async (event, config) => {
         return { 
             success: true, 
             message: `[완료] 총 ${manifest.pages.length}페이지 클론 성공`, 
-            data: { clonePath: outDir, assets: manifest.assets, tokens: manifest.tokens, layout: manifest.layout, components: manifest.components, endpoints: backendEndpoints }
+            data: { clonePath: outDir, assets: manifest.assets, tokens: manifest.tokens, layout: manifest.layout, components: manifest.components, endpoints: dedupedEndpoints }
         };
     } catch (error) {
         return { success: false, message: error.message };
@@ -2022,4 +2073,53 @@ ipcMain.handle('import-clone', async (event) => {
 ipcMain.handle('open-clone-folder', async (e, dir) => {
     const { shell } = require('electron');
     await shell.openPath(dir);
+});
+
+let previewServer = null;
+
+ipcMain.handle('preview-clone', async (e, dir) => {
+    const http = require('http');
+    const path = require('path');
+    const fs = require('fs');
+
+    if (previewServer) {
+        previewServer.close();
+    }
+
+    const startServer = (port) => {
+        return new Promise((resolve, reject) => {
+            previewServer = http.createServer((req, res) => {
+                let filePath = path.join(dir, req.url === '/' ? 'index.html' : req.url.split('?')[0]);
+                if (!fs.existsSync(filePath)) {
+                    res.writeHead(404);
+                    res.end('Not Found');
+                    return;
+                }
+                const ext = path.extname(filePath);
+                const mimeTypes = {
+                    '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
+                    '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpg',
+                    '.gif': 'image/gif', '.svg': 'image/svg+xml'
+                };
+                res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' });
+                fs.createReadStream(filePath).pipe(res);
+            });
+            previewServer.on('error', (err) => {
+                if (err.code === 'EADDRINUSE') {
+                    resolve(startServer(port + 1));
+                } else {
+                    reject(err);
+                }
+            });
+            previewServer.listen(port, () => {
+                const { shell } = require('electron');
+                shell.openExternal(`http://localhost:${port}/index.html`);
+                e.sender.send('log', `[미리보기] http://localhost:${port} 시작됨`, 'info');
+                resolve(port);
+            });
+        });
+    };
+
+    await startServer(8000);
+    return true;
 });

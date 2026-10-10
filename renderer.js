@@ -120,13 +120,14 @@ function renderExtractResult(data) {
         <div style="margin-bottom: 10px; padding: 10px; background: #222; border: 1px solid #555; border-radius: 4px;">
             <strong style="color: #4CAF50;">[JS 백엔드 스텁 관리]</strong><br>
             <div style="max-height: 150px; overflow-y: auto; margin: 10px 0; font-family: monospace; font-size: 11px;">
-                ${(data.endpoints || []).map(ep => `<div><span style="color:#2196F3;">${ep.method}</span> ${ep.url} <span style="color:#777">(${ep.source})</span></div>`).join('')}
+                ${(data.endpoints || []).map(ep => `<div style="opacity: ${ep.type === 'tracking' ? '0.6' : '1'}"><span style="color:${ep.type === 'tracking' ? '#9E9E9E' : '#2196F3'}; font-weight:bold;">[${(ep.type || 'api').toUpperCase()}]</span> <span>${ep.method}</span> ${ep.url} <span style="color:#777">(${ep.sources ? ep.sources.length : 1} sources)</span></div>`).join('')}
                 ${!(data.endpoints || []).length ? '<span style="color:#777;">발견된 API 엔드포인트가 없습니다.</span>' : ''}
             </div>
             <label style="font-size: 12px; display: flex; align-items: center; gap: 5px; margin-bottom: 10px;">
                 <input type="checkbox" id="chk-apply-stubs" checked> 백엔드 호출 스텁(Stub) 교체 활성화
             </label>
             <button class="primary-btn" id="btn-regen-stubs" style="background-color: #ff9800; font-size: 12px; padding: 4px 8px;" onclick="alert('스텁 재생성 기능은 현재 추출(Extract) 시 자동으로 수행됩니다. 세부 스텁 편집 기능은 추후 업데이트 예정입니다.')">스텁 설정 업데이트</button>
+            <button class="icon-btn" style="font-size: 12px; padding: 4px 8px; margin-left: 5px;" onclick="window.api.openCloneFolder('${data.clonePath.replace(/\\/g, '\\\\')}')">전체 backend-raw.json 보기 (폴더 열기)</button>
         </div>
         <details class="details-panel">
             <summary>자세한 JSON 구조 펼치기</summary>
@@ -564,6 +565,7 @@ async function loadClones() {
                     <div style="font-size: 11px; color: #fff; background: transparent; border: 1px solid ${badgeBg}; color: ${badgeBg}; padding: 3px 6px; border-radius: 3px; display: inline-block; align-self: flex-start; margin-bottom: 15px;">${badgeText}</div>
                     
                     <div style="margin-top: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 5px;">
+                        <button class="primary-btn" style="grid-column: 1 / -1; padding: 5px 0; font-size: 11px; background-color: #2196F3;" onclick="event.stopPropagation(); window.api.previewClone('${c.dir.replace(/\\/g, '\\\\')}')">미리보기 (로컬 서버)</button>
                         <button class="primary-btn" style="padding: 5px 0; font-size: 11px;" onclick="event.stopPropagation(); doLoadClone('${c.dir.replace(/\\/g, '\\\\')}')">이어하기</button>
                         <button class="primary-btn" style="padding: 5px 0; font-size: 11px; background-color: #ff9800;" onclick="event.stopPropagation(); doRepairClone('${c.dir.replace(/\\/g, '\\\\')}')">복구</button>
                         <button class="icon-btn" style="padding: 5px 0; font-size: 11px;" onclick="event.stopPropagation(); window.api.openCloneFolder('${c.dir.replace(/\\/g, '\\\\')}')">폴더 열기</button>
