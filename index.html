@@ -29,6 +29,7 @@
 <body>
     <nav>
         <button class="tab-btn active" data-target="tab-extract">프론트 추출</button>
+        <button class="tab-btn" data-target="tab-clones">클로너</button>
         <button class="tab-btn" data-target="tab-scaffold">백엔드 생성</button>
         <button class="tab-btn" data-target="tab-library">패턴 라이브러리</button>
         <button class="tab-btn" data-target="tab-packager">프롬프트 패키저</button>
@@ -41,11 +42,22 @@
         <!-- 탭 1: 프론트 추출 -->
         <div id="tab-extract" class="tab-content active">
             <h2>웹 구조 완벽 추출 및 클론</h2>
-            <div class="form-group">
-                <label>타겟 쇼핑몰 URL</label>
-                <div style="display: flex; gap: 10px;">
-                    <input type="url" id="extract-url" placeholder="https://example.com" value="https://example.com" style="flex: 1;">
-                    <button class="primary-btn" id="btn-analyze-site" style="background-color: #2196F3;">사이트 분석</button>
+            <div id="active-clone-banner" style="display: none; background: #004d40; padding: 10px; margin-bottom: 15px; border-radius: 5px; border: 1px solid #00bfa5;">
+                <span id="active-clone-text" style="font-size: 13px;"></span>
+                <button id="btn-release-clone" style="float: right; font-size: 11px; cursor: pointer; background: transparent; border: 1px solid #ccc; color: white;">해제</button>
+            </div>
+            
+            <div class="form-group" style="display: flex; gap: 10px;">
+                <div style="flex: 2;">
+                    <label>타겟 쇼핑몰 URL</label>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="url" id="extract-url" placeholder="https://example.com" value="https://example.com" style="flex: 1;">
+                        <button class="primary-btn" id="btn-analyze-site" style="background-color: #2196F3;">사이트 분석</button>
+                    </div>
+                </div>
+                <div style="flex: 1;">
+                    <label>클론 이름 (프로젝트명)</label>
+                    <input type="text" id="extract-clone-name" placeholder="자동 생성 (도메인)">
                 </div>
             </div>
             
@@ -72,6 +84,21 @@
             <button class="primary-btn open-folder-btn" id="btn-run-clone" style="background-color:#009688;">클론 실행</button>
             <button class="primary-btn open-folder-btn" id="btn-open-pattern-modal" style="background-color:#9c27b0;">패턴으로 저장</button>
             <div class="result-panel" id="extract-result">추출 대기 중...</div>
+        </div>
+
+        <!-- 탭 신설: 클로너 보관함 -->
+        <div id="tab-clones" class="tab-content">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2>클로너 보관함</h2>
+                <div>
+                    <button class="icon-btn" id="btn-clones-import">📁 폴더 가져오기</button>
+                    <button class="icon-btn" id="btn-clones-refresh">🔄 새로고침</button>
+                    <button class="icon-btn" id="btn-clones-open">📂 보관함 열기</button>
+                </div>
+            </div>
+            <div id="clones-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 15px;">
+                <!-- 카드가 여기 들어감 -->
+            </div>
         </div>
 
         <!-- 탭 2: 백엔드 생성 -->
@@ -139,7 +166,14 @@
             <input type="range" id="ui-zoom" min="50" max="150" value="70" style="width: 100%;">
         </div>
         <div class="form-group">
-            <label>출력 폴더 경로 (Output Directory)</label>
+            <label>클론 보관함 경로</label>
+            <div style="display: flex; gap: 10px;">
+                <input type="text" id="inp-library-path" placeholder="C:\Users\...\Documents\GJC-Clones" style="flex: 1;">
+                <button class="icon-btn" id="btn-browse-library">찾아보기</button>
+            </div>
+        </div>
+        <div class="form-group">
+            <label>스캐폴딩 출력 폴더 (기본)</label>
             <input type="text" id="output-dir" value="D:/FREE-GJC/output/scaffold_mall">
         </div>
         <div class="form-group">

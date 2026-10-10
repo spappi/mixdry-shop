@@ -42,8 +42,15 @@ const loadSettings = async () => {
 };
 
 const saveSettings = async () => {
+    const libPath = document.getElementById('inp-library-path').value;
+    try {
+        await window.api.setLibraryPath(libPath);
+        if (typeof loadClones === 'function') loadClones();
+    } catch(e) {}
+
     const s = {
         zoom: document.getElementById('ui-zoom').value,
+        cloneLibraryPath: libPath,
         outputDir: document.getElementById('output-dir').value,
         patternDbPath: document.getElementById('pattern-db-path').value,
         defMallName: document.getElementById('def-mall-name').value,
@@ -270,7 +277,8 @@ if (btnOpenApiSpec) {
         
         const config = {
             urls: collectedUrls,
-            outDirBase: document.getElementById('output-dir').value,
+            libraryPath: document.getElementById('inp-library-path').value,
+            cloneName: document.getElementById('extract-clone-name').value || document.getElementById('extract-clone-name').placeholder,
             paramBlacklist: getEffectiveCrawlConfig().paramBlacklist
         };
 
@@ -506,4 +514,158 @@ document.getElementById('btn-run-scaffold').addEventListener('click', async () =
         appendLog(`생성 오류: ${err.message}`, 'error');
         document.getElementById('scaffold-result').textContent = '오류 발생';
     }
+});
+// --- v4.3 Cloner Tab Logic ---
+let activeClone = null;
+
+async function loadClones() {
+    const grid = document.getElementById('clones-grid');
+    if (!grid) return;
+    grid.innerHTML = '스캔 중...';
+    try {
+        const clones = await window.api.listClones();
+        if (clones.length === 0) {
+            grid.innerHTML = '<div style="grid-column: 1 / -1; text-align: center; color: #888; padding: 40px;">아직 클론이 없습니다.<br>프론트 추출 탭에서 사이트를 추출해보세요.</div>';
+            return;
+        }
+        grid.innerHTML = '';
+        clones.forEach(c => {
+            const card = document.createElement('div');
+            card.style = 'background: #1a1a1a; border: 1px solid #444; border-radius: 5px; overflow: hidden; display: flex; flex-direction: column;';
+            
+            const thumb = c.hasScreenshot ? `file:///${c.dir.replace(/\\/g, '/')}/screenshot.png` : '';
+            const thumbHtml = thumb ? `<img src="${thumb}" style="width: 100%; height: 120px; object-fit: cover; border-bottom: 1px solid #333;">` : `<div style="width: 100%; height: 120px; background: #333; display: flex; align-items: center; justify-content: center; color: #777; border-bottom: 1px solid #222;">NO IMAGE</div>`;
+            
+            const isOk = c.missing === 0 && c.failed === 0;
+            const badgeColor = isOk ? '#4CAF50' : '#ff9800';
+            const badgeText = c.hasAssetMap ? (isOk ? '● 정상' : `● 누락 ${c.missing + c.failed}건`) : '복구 정보 없음';
+            const badgeBg = c.hasAssetMap ? badgeColor : '#777';
+
+            card.innerHTML = `
+                ${thumbHtml}
+                <div style="padding: 10px; flex: 1; display: flex; flex-direction: column;">
+                    <div style="font-weight: bold; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${c.name}">${c.name}</div>
+                    <div style="font-size: 11px; color: #aaa; margin-bottom: 4px;">${c.domain}</div>
+                    <div style="font-size: 11px; color: #888; margin-bottom: 6px;">${new Date(c.extractedAt).toLocaleString()}</div>
+                    <div style="font-size: 11px; color: #aaa; margin-bottom: 10px;">${c.pages}페이지 · ${c.assets}에셋</div>
+                    <div style="font-size: 11px; color: #fff; background: transparent; border: 1px solid ${badgeBg}; color: ${badgeBg}; padding: 3px 6px; border-radius: 3px; display: inline-block; align-self: flex-start; margin-bottom: 15px;">${badgeText}</div>
+                    
+                    <div style="margin-top: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 5px;">
+                        <button class="primary-btn" style="padding: 5px 0; font-size: 11px;" onclick="doLoadClone('${c.dir.replace(/\\/g, '\\\\')}')">이어하기</button>
+                        <button class="primary-btn" style="padding: 5px 0; font-size: 11px; background-color: #ff9800;" onclick="doRepairClone('${c.dir.replace(/\\/g, '\\\\')}')">복구</button>
+                        <button class="icon-btn" style="padding: 5px 0; font-size: 11px;" onclick="window.api.openCloneFolder('${c.dir.replace(/\\/g, '\\\\')}')">폴더 열기</button>
+                        <button class="icon-btn" style="padding: 5px 0; font-size: 11px; color: #f44336; border-color: #f44336;" onclick="doDeleteClone('${c.dir.replace(/\\/g, '\\\\')}')">삭제</button>
+                    </div>
+                </div>
+            `;
+            grid.appendChild(card);
+        });
+    } catch(e) {
+        grid.innerHTML = '에러 발생: ' + e.message;
+    }
+}
+
+window.doLoadClone = async (dir) => {
+    try {
+        const data = await window.api.loadClone(dir);
+        activeClone = { dir, manifest: data.manifest, urlmap: data.urlmap, assetMap: data.assetMap };
+        const txt = document.getElementById('active-clone-text');
+        const name = activeClone.manifest.name || new URL(activeClone.manifest.targetUrl).hostname;
+        txt.textContent = `현재 작업 중: ${name} (${activeClone.manifest.targetUrl}, ${new Date(activeClone.manifest.extractedAt).toLocaleString()}) · ${activeClone.manifest.pages.length}페이지`;
+        document.getElementById('active-clone-banner').style.display = 'block';
+        
+        document.getElementById('extract-url').value = activeClone.manifest.targetUrl;
+        
+        document.querySelector('[data-target="tab-extract"]').click();
+    } catch(e) {
+        alert('불러오기 실패: ' + e.message);
+    }
+};
+
+window.doRepairClone = async (dir) => {
+    appendLog(`[복구] ${dir} 복구 시작...`);
+    try {
+        const res = await window.api.repairClone(dir);
+        if (res.success) {
+            appendLog(`[복구 완료] 복구됨: ${res.repaired}개, 여전히 실패: ${res.stillFailed.length}개`, res.stillFailed.length ? 'error' : 'info');
+        } else {
+            appendLog(`[복구 실패] ${res.message}`, 'error');
+            if (res.message.includes('부분 스캔')) alert(res.message);
+        }
+        loadClones();
+    } catch(e) {
+        appendLog(`[복구 에러] ${e.message}`, 'error');
+    }
+};
+
+window.doDeleteClone = async (dir) => {
+    if (confirm('이 클론 폴더를 휴지통으로 이동하시겠습니까?')) {
+        try {
+            await window.api.deleteClone(dir);
+            loadClones();
+        } catch(e) {
+            alert('삭제 실패: ' + e.message);
+        }
+    }
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+    const btnRelease = document.getElementById('btn-release-clone');
+    if (btnRelease) {
+        btnRelease.addEventListener('click', () => {
+            activeClone = null;
+            document.getElementById('active-clone-banner').style.display = 'none';
+        });
+    }
+
+    const btnRefresh = document.getElementById('btn-clones-refresh');
+    if (btnRefresh) btnRefresh.addEventListener('click', loadClones);
+
+    const btnImport = document.getElementById('btn-clones-import');
+    if (btnImport) {
+        btnImport.addEventListener('click', async () => {
+            try {
+                await window.api.importClone();
+                loadClones();
+            } catch(e) {
+                if(e.message !== 'cancelled') alert(e.message);
+            }
+        });
+    }
+
+    const btnOpen = document.getElementById('btn-clones-open');
+    if (btnOpen) {
+        btnOpen.addEventListener('click', async () => {
+            const p = await window.api.getLibraryPath();
+            window.api.openFolder(p);
+        });
+    }
+
+    const urlInput = document.getElementById('extract-url');
+    if (urlInput) {
+        urlInput.addEventListener('input', (e) => {
+            try {
+                const u = new URL(e.target.value);
+                document.getElementById('extract-clone-name').value = u.hostname;
+            } catch(err) {}
+        });
+    }
+
+    const btnBrowseLib = document.getElementById('btn-browse-library');
+    if (btnBrowseLib) {
+        btnBrowseLib.addEventListener('click', async () => {
+            // we'll rely on the backend to open dialog and update settings if we added IPC for it,
+            // but if we don't have a specific IPC, we can prompt or just tell the user to manually type it.
+            // Oh, wait, we don't have a browse directory IPC specifically for settings. 
+            // We can just ask them to type it for now, or add an IPC in main.js. Let's add it in main.js later.
+        });
+    }
+
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            if (e.target.dataset.target === 'tab-clones') {
+                loadClones();
+            }
+        });
+    });
 });

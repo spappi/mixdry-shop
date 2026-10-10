@@ -1057,22 +1057,39 @@ ipcMain.handle('analyze-site', async (event, config) => {
 
 // v3.3: Multi-page Support (Sequential Extract)
 ipcMain.handle('extract-multi', async (event, config) => {
-    const { urls, outDirBase, paramBlacklist } = config; 
+    const { urls, libraryPath, cloneName, paramBlacklist } = config; 
     let offscreenWindow = null;
     let debuggerAttached = false;
     const sendLog = (msg, type='info') => event.sender.send('log', msg, type);
     cancelRequested = false;
     try {
         if (!urls || urls.length === 0) throw new Error("추출할 URL이 없습니다.");
-        const domain = new URL(urls[0].url).hostname;
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const outDir = path.join(outDirBase, `clone_${domain}_multi_${timestamp}`);
+        
+        let cName = cloneName || new URL(urls[0].url).hostname;
+        cName = cName.replace(/[^a-zA-Z0-9가-힣_-]/g, '_').substring(0, 50);
+        const outDir = path.join(libraryPath, cName);
+
+        // Backup existing folder
+        if (fs.existsSync(outDir)) {
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '');
+            const backupDir = path.join(libraryPath, `${cName}-backup-${timestamp}`);
+            fs.renameSync(outDir, backupDir);
+            
+            // Limit to 3 backups
+            const files = fs.readdirSync(libraryPath);
+            const backups = files.filter(f => f.startsWith(`${cName}-backup-`)).sort();
+            while (backups.length > 3) {
+                const oldest = backups.shift();
+                fs.rmSync(path.join(libraryPath, oldest), { recursive: true, force: true });
+            }
+        }
         
         fs.mkdirSync(path.join(outDir, 'css'), { recursive: true });
         fs.mkdirSync(path.join(outDir, 'assets'), { recursive: true });
         fs.mkdirSync(path.join(outDir, 'pages'), { recursive: true });
 
         const urlMap = {};
+        const assetMap = {};
         urls.forEach((u, i) => {
             if (i === 0) urlMap[u.url] = 'index.html';
             else {
@@ -1151,8 +1168,8 @@ ipcMain.handle('extract-multi', async (event, config) => {
         let nextCssId = 0;
         let nextImgId = 0;
         let nextInlineId = 0;
-
-        const manifest = { targetUrl: urls[0].url, extractedAt: new Date().toISOString(), pages: [], failedPages: [], assets: [], duplicatePages: [] };
+        
+        const manifest = { name: cName, targetUrl: urls[0].url, extractedAt: new Date().toISOString(), pages: [], failedPages: [], assets: [], duplicatePages: [] };
         const contentHashes = new Map();
         const failedDetails = [];
 
@@ -1367,6 +1384,7 @@ ipcMain.handle('extract-multi', async (event, config) => {
                         if (item.type === 'inline-css') {
                             fs.writeFileSync(path.join(outDir, item.localPath), item.text);
                             manifest.assets.push(item.localPath);
+                            assetMap[item.localPath] = { url: item.url, status: 'ok' };
                         } else {
                             const decUrl = decodeURIComponent(item.url);
                             let bodyData = capturedBodies.get(item.url) || capturedBodies.get(decUrl);
@@ -1431,9 +1449,12 @@ ipcMain.handle('extract-multi', async (event, config) => {
                                                         capturedBodies.delete(decU);
                                                         manifest.assets.push(lp);
                                                         globalImgMap[u] = lp;
+                                                        assetMap[lp] = { url: u, status: 'ok' };
                                                         
                                                         const newRelativePath = '../' + lp;
                                                         cssText = cssText.split(m).join(`url("${newRelativePath}")`);
+                                                    } else {
+                                                        assetMap[lp] = { url: u, status: 'failed', error: '[에셋 바디 없음]' };
                                                     }
                                                 } else {
                                                     const newRelativePath = '../' + lp;
@@ -1444,15 +1465,18 @@ ipcMain.handle('extract-multi', async (event, config) => {
                                     }
                                     fs.writeFileSync(path.join(outDir, item.localPath), cssText);
                                     globalCssMap[item.url] = item.localPath;
+                                    assetMap[item.localPath] = { url: item.url, status: 'ok' };
                                 } else {
                                     fs.writeFileSync(path.join(outDir, item.localPath), bodyData.buf);
                                     globalImgMap[item.url] = item.localPath;
+                                    assetMap[item.localPath] = { url: item.url, status: 'ok' };
                                 }
                                 capturedBodies.delete(item.url); 
                                 capturedBodies.delete(decUrl);
                                 manifest.assets.push(item.localPath);
                             } else {
                                 sendLog(`[에셋 실패] ${item.url}`, 'error');
+                                assetMap[item.localPath] = { url: item.url, status: 'failed', error: '[에셋 바디 없음]' };
                                 const prefix = localPath === 'index.html' ? './' : '../';
                                 const brokenUrl = prefix + item.localPath;
                                 pageData.html = pageData.html.split(brokenUrl).join(item.url);
@@ -1460,6 +1484,7 @@ ipcMain.handle('extract-multi', async (event, config) => {
                         }
                     } catch (e) {
                         sendLog(`[에셋 실패] ${item.localPath} - ${e.message}`, 'error');
+                        assetMap[item.localPath] = { url: item.url, status: 'failed', error: e.message };
                     }
                 }
                 currentPhase = 'write';
@@ -1485,6 +1510,7 @@ ipcMain.handle('extract-multi', async (event, config) => {
             }
         }
         fs.writeFileSync(path.join(outDir, 'urlmap.json'), JSON.stringify(urlMap, null, 2));
+        fs.writeFileSync(path.join(outDir, 'assetMap.json'), JSON.stringify(assetMap, null, 2));
         fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
         fs.writeFileSync(path.join(outDir, 'README.md'), `# Multi-page Clone of ${domain}\n\nOpen \`index.html\` to view the cloned structure.\n\nTotal pages: ${manifest.pages.length}`);
         if (failedDetails.length > 0) {
@@ -1523,4 +1549,150 @@ ipcMain.handle('extract-multi', async (event, config) => {
             offscreenWindow.destroy();
         }
     }
+});
+// --- v4.3 Clone Library IPC Handlers ---
+const { dialog } = require('electron');
+
+let cloneLibraryPath = path.join(require('os').homedir(), 'Documents', 'GJC-Clones');
+
+ipcMain.handle('get-library-path', () => cloneLibraryPath);
+ipcMain.handle('set-library-path', (e, p) => { cloneLibraryPath = p; });
+
+ipcMain.handle('list-clones', async () => {
+    if (!fs.existsSync(cloneLibraryPath)) fs.mkdirSync(cloneLibraryPath, { recursive: true });
+    const items = fs.readdirSync(cloneLibraryPath, { withFileTypes: true });
+    const clones = [];
+    for (const item of items) {
+        if (!item.isDirectory() || item.name.includes('-backup-')) continue;
+        const dir = path.join(cloneLibraryPath, item.name);
+        const manifestPath = path.join(dir, 'manifest.json');
+        if (!fs.existsSync(manifestPath)) continue;
+        
+        try {
+            const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+            const assetMapPath = path.join(dir, 'assetMap.json');
+            let failed = 0, missing = 0, hasAssetMap = false;
+            
+            if (fs.existsSync(assetMapPath)) {
+                hasAssetMap = true;
+                const am = JSON.parse(fs.readFileSync(assetMapPath, 'utf8'));
+                for (const [lp, info] of Object.entries(am)) {
+                    if (info.status === 'failed') failed++;
+                    else if (info.status === 'ok') {
+                        if (!fs.existsSync(path.join(dir, lp))) missing++;
+                    }
+                }
+            } else {
+                if (manifest.assets) {
+                    for (const lp of manifest.assets) {
+                        if (!fs.existsSync(path.join(dir, lp))) missing++;
+                    }
+                }
+            }
+            
+            clones.push({
+                dir,
+                name: manifest.name || new URL(manifest.targetUrl).hostname,
+                domain: new URL(manifest.targetUrl).hostname,
+                extractedAt: manifest.extractedAt,
+                pages: manifest.pages ? manifest.pages.length : 0,
+                assets: manifest.assets ? manifest.assets.length : 0,
+                failed, missing, hasAssetMap,
+                hasScreenshot: fs.existsSync(path.join(dir, 'screenshot.png'))
+            });
+        } catch(e){}
+    }
+    return clones.sort((a,b) => new Date(b.extractedAt) - new Date(a.extractedAt));
+});
+
+ipcMain.handle('load-clone', async (e, dir) => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+    const urlmap = fs.existsSync(path.join(dir, 'urlmap.json')) ? JSON.parse(fs.readFileSync(path.join(dir, 'urlmap.json'), 'utf8')) : {};
+    const assetMap = fs.existsSync(path.join(dir, 'assetMap.json')) ? JSON.parse(fs.readFileSync(path.join(dir, 'assetMap.json'), 'utf8')) : {};
+    return { manifest, urlmap, assetMap };
+});
+
+ipcMain.handle('repair-clone', async (e, dir) => {
+    const assetMapPath = path.join(dir, 'assetMap.json');
+    if (!fs.existsSync(assetMapPath)) {
+        return { success: false, message: 'assetMap.json이 없습니다. 부분 스캔 모드 진단결과 디스크에서 누락된 파일을 확인하세요.' };
+    }
+    const am = JSON.parse(fs.readFileSync(assetMapPath, 'utf8'));
+    const repairList = [];
+    for (const [lp, info] of Object.entries(am)) {
+        if (info.status === 'failed' || (info.status === 'ok' && !fs.existsSync(path.join(dir, lp)))) {
+            repairList.push({ lp, url: info.url });
+        }
+    }
+    if (repairList.length === 0) return { success: true, repaired: 0, stillFailed: [], message: '복구할 항목이 없습니다.' };
+
+    const https = require('https');
+    const http = require('http');
+    let repaired = 0;
+    const stillFailed = [];
+
+    const fetchUrl = (u) => new Promise((resolve) => {
+        const client = u.startsWith('https') ? https : http;
+        const req = client.get(u, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', 'Referer': new URL(u).origin } }, (res) => {
+            if (res.statusCode >= 200 && res.statusCode < 300) {
+                const chunks = [];
+                res.on('data', c => chunks.push(c));
+                res.on('end', () => resolve(Buffer.concat(chunks)));
+            } else if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                fetchUrl(res.headers.location.startsWith('http') ? res.headers.location : new URL(res.headers.location, u).toString()).then(resolve);
+            } else {
+                resolve(null);
+            }
+        });
+        req.on('error', () => resolve(null));
+        req.setTimeout(30000, () => { req.destroy(); resolve(null); });
+    });
+
+    for (const item of repairList) {
+        const buf = await fetchUrl(item.url);
+        if (buf) {
+            fs.mkdirSync(path.dirname(path.join(dir, item.lp)), { recursive: true });
+            fs.writeFileSync(path.join(dir, item.lp), buf);
+            am[item.lp].status = 'ok';
+            am[item.lp].error = undefined;
+            repaired++;
+        } else {
+            am[item.lp].status = 'failed';
+            am[item.lp].error = '[복구 다운로드 실패]';
+            stillFailed.push(item.lp);
+        }
+    }
+    fs.writeFileSync(assetMapPath, JSON.stringify(am, null, 2));
+    return { success: true, repaired, stillFailed, total: repairList.length };
+});
+
+ipcMain.handle('delete-clone', async (e, dir) => {
+    const { shell } = require('electron');
+    await shell.trashItem(dir);
+    return true;
+});
+
+ipcMain.handle('import-clone', async (event) => {
+    const res = await dialog.showOpenDialog({ properties: ['openDirectory'] });
+    if (res.canceled) throw new Error('cancelled');
+    const src = res.filePaths[0];
+    if (!fs.existsSync(path.join(src, 'manifest.json'))) throw new Error('클론 출력 폴더가 아닙니다.');
+    
+    const manifest = JSON.parse(fs.readFileSync(path.join(src, 'manifest.json'), 'utf8'));
+    let cName = manifest.name || new URL(manifest.targetUrl).hostname;
+    cName = cName.replace(/[^a-zA-Z0-9가-힣_-]/g, '_').substring(0, 50);
+    const dest = path.join(cloneLibraryPath, cName);
+
+    if (fs.existsSync(dest)) {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '');
+        fs.renameSync(dest, path.join(cloneLibraryPath, `${cName}-backup-${timestamp}`));
+    }
+    
+    fs.cpSync(src, dest, { recursive: true });
+    return true;
+});
+
+ipcMain.handle('open-clone-folder', async (e, dir) => {
+    const { shell } = require('electron');
+    await shell.openPath(dir);
 });
