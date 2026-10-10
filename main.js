@@ -748,48 +748,71 @@ ipcMain.handle('analyze-site', async (event, config) => {
         const apiTraffic = [];
         const reqMap = new Map();
 
-        try {
-            if (offscreenWindow.webContents.debugger.isAttached()) offscreenWindow.webContents.debugger.detach();
-            offscreenWindow.webContents.debugger.attach('1.3');
-            await offscreenWindow.webContents.debugger.sendCommand('Network.enable');
-            debuggerAttached = true;
+        let debuggerSetupPromise = null;
 
-            offscreenWindow.webContents.debugger.on('message', async (e, method, params) => {
+        offscreenWindow.webContents.once('did-start-loading', () => {
+            debuggerSetupPromise = (async () => {
                 try {
-                    if (method === 'Network.requestWillBeSent') {
-                        reqMap.set(params.requestId, {
-                            url: params.request.url,
-                            method: params.request.method,
-                            postData: params.request.postData,
-                            headers: params.request.headers
-                        });
-                    } else if (method === 'Network.responseReceived') {
-                        const req = reqMap.get(params.requestId);
-                        if (req && (params.type === 'XHR' || params.type === 'Fetch')) {
-                            req.status = params.response.status;
-                            req.mimeType = params.response.mimeType;
-                        }
-                    } else if (method === 'Network.loadingFinished') {
-                        const req = reqMap.get(params.requestId);
-                        if (req && req.status) { // It was XHR/Fetch
-                            try {
-                                const { body, base64Encoded } = await offscreenWindow.webContents.debugger.sendCommand(
-                                    'Network.getResponseBody', { requestId: params.requestId }
-                                );
-                                req.responseBody = base64Encoded ? Buffer.from(body, 'base64').toString('utf8') : body;
-                                apiTraffic.push(req);
-                            } catch (err) {}
-                        }
-                        reqMap.delete(params.requestId);
+                    if (offscreenWindow.webContents.debugger.isAttached()) {
+                        offscreenWindow.webContents.debugger.detach();
                     }
-                } catch (err) {}
-            });
-        } catch (e) {
-            sendLog('디버거 부착 실패 (API 캡처 불가): ' + e.message, 'error');
-        }
+                    offscreenWindow.webContents.debugger.attach('1.3');
+                    
+                    const enableCmd = offscreenWindow.webContents.debugger.sendCommand('Network.enable');
+                    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('CDP Network.enable 타임아웃 (10초)')), 10000));
+                    
+                    await Promise.race([enableCmd, timeout]);
+                    
+                    debuggerAttached = true;
+                    sendLog('디버거 부착 완료 (API 트래픽 캡처 모드)');
+                    
+                    offscreenWindow.webContents.debugger.on('message', async (e, method, params) => {
+                        try {
+                            if (method === 'Network.requestWillBeSent') {
+                                reqMap.set(params.requestId, {
+                                    url: params.request.url,
+                                    method: params.request.method,
+                                    postData: params.request.postData,
+                                    headers: params.request.headers
+                                });
+                            } else if (method === 'Network.responseReceived') {
+                                const req = reqMap.get(params.requestId);
+                                if (req && (params.type === 'XHR' || params.type === 'Fetch')) {
+                                    req.status = params.response.status;
+                                    req.mimeType = params.response.mimeType;
+                                }
+                            } else if (method === 'Network.loadingFinished') {
+                                const req = reqMap.get(params.requestId);
+                                if (req && req.status) {
+                                    try {
+                                        const { body, base64Encoded } = await offscreenWindow.webContents.debugger.sendCommand(
+                                            'Network.getResponseBody', { requestId: params.requestId }
+                                        );
+                                        req.responseBody = base64Encoded ? Buffer.from(body, 'base64').toString('utf8') : body;
+                                        apiTraffic.push(req);
+                                    } catch (err) {}
+                                }
+                                reqMap.delete(params.requestId);
+                            }
+                        } catch (err) {}
+                    });
+                } catch (e) {
+                    sendLog('디버거 부착 실패 (API 캡처 불가): ' + e.message, 'error');
+                    try {
+                        if (offscreenWindow.webContents.debugger.isAttached()) offscreenWindow.webContents.debugger.detach();
+                    } catch(err) {}
+                }
+            })();
+        });
 
         sendLog(`분석용 URL 로딩 시작: ${url}`);
-        await offscreenWindow.loadURL(url, { waitUntil: 'domcontentloaded' });
+        const loadPromise = offscreenWindow.loadURL(url, { waitUntil: 'domcontentloaded' });
+        
+        await loadPromise;
+        
+        if (debuggerSetupPromise) {
+            await debuggerSetupPromise;
+        }
         await new Promise(r => setTimeout(r, 4000)); // Wait for initial API calls
 
         // 1. Generate OpenAPI spec from traffic
@@ -955,37 +978,53 @@ ipcMain.handle('extract-multi', async (event, config) => {
         const reqOriginalUrl = new Map();
         const reqFinalUrl = new Map();
 
-        try {
-            if (offscreenWindow.webContents.debugger.isAttached()) offscreenWindow.webContents.debugger.detach();
-            offscreenWindow.webContents.debugger.attach('1.3');
-            await offscreenWindow.webContents.debugger.sendCommand('Network.enable');
-            debuggerAttached = true;
-            sendLog('전역 디버거 부착 완료 (다중 페이지 자동 캡처)');
-            
-            offscreenWindow.webContents.debugger.on('message', async (e, method, params) => {
+        let debuggerSetupPromise = null;
+
+        offscreenWindow.webContents.once('did-start-loading', () => {
+            debuggerSetupPromise = (async () => {
                 try {
-                    if (method === 'Network.requestWillBeSent') {
-                        reqOriginalUrl.set(params.requestId, params.request.url);
-                    } else if (method === 'Network.responseReceived') {
-                        reqFinalUrl.set(params.requestId, params.response.url);
-                    } else if (method === 'Network.loadingFinished') {
-                        const requestId = params.requestId;
-                        const u_arr = [reqOriginalUrl.get(requestId), reqFinalUrl.get(requestId)].filter(Boolean);
-                        try {
-                            const { body, base64Encoded } = await offscreenWindow.webContents.debugger.sendCommand(
-                                'Network.getResponseBody', { requestId }
-                            );
-                            const buf = base64Encoded ? Buffer.from(body, 'base64') : Buffer.from(body, 'utf8');
-                            for (const u of u_arr) capturedBodies.set(u, buf);
-                        } catch (err) {}
-                        reqOriginalUrl.delete(requestId);
-                        reqFinalUrl.delete(requestId);
+                    if (offscreenWindow.webContents.debugger.isAttached()) {
+                        offscreenWindow.webContents.debugger.detach();
                     }
-                } catch (err) {}
-            });
-        } catch (e) {
-            sendLog('디버거 부착 실패: ' + e.message, 'error');
-        }
+                    offscreenWindow.webContents.debugger.attach('1.3');
+                    
+                    const enableCmd = offscreenWindow.webContents.debugger.sendCommand('Network.enable');
+                    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('CDP Network.enable 타임아웃 (10초)')), 10000));
+                    
+                    await Promise.race([enableCmd, timeout]);
+                    
+                    debuggerAttached = true;
+                    sendLog('전역 디버거 부착 완료 (다중 페이지 자동 캡처 모드)');
+                    
+                    offscreenWindow.webContents.debugger.on('message', async (e, method, params) => {
+                        try {
+                            if (method === 'Network.requestWillBeSent') {
+                                reqOriginalUrl.set(params.requestId, params.request.url);
+                            } else if (method === 'Network.responseReceived') {
+                                reqFinalUrl.set(params.requestId, params.response.url);
+                            } else if (method === 'Network.loadingFinished') {
+                                const requestId = params.requestId;
+                                const u_arr = [reqOriginalUrl.get(requestId), reqFinalUrl.get(requestId)].filter(Boolean);
+                                try {
+                                    const { body, base64Encoded } = await offscreenWindow.webContents.debugger.sendCommand(
+                                        'Network.getResponseBody', { requestId }
+                                    );
+                                    const buf = base64Encoded ? Buffer.from(body, 'base64') : Buffer.from(body, 'utf8');
+                                    for (const u of u_arr) capturedBodies.set(u, buf);
+                                } catch (err) {}
+                                reqOriginalUrl.delete(requestId);
+                                reqFinalUrl.delete(requestId);
+                            }
+                        } catch (err) {}
+                    });
+                } catch (e) {
+                    sendLog('디버거 부착 실패: ' + e.message, 'error');
+                    try {
+                        if (offscreenWindow.webContents.debugger.isAttached()) offscreenWindow.webContents.debugger.detach();
+                    } catch(err) {}
+                }
+            })();
+        });
 
         const globalCssMap = {};
         const globalImgMap = {};
@@ -1001,7 +1040,13 @@ ipcMain.handle('extract-multi', async (event, config) => {
             sendLog(`[순차 추출] (${i+1}/${urls.length}) ${currentUrl}`);
 
             try {
-                await offscreenWindow.loadURL(currentUrl, { waitUntil: 'domcontentloaded' });
+                const loadPromise = offscreenWindow.loadURL(currentUrl, { waitUntil: 'domcontentloaded' });
+                await loadPromise;
+                
+                if (i === 0 && debuggerSetupPromise) {
+                    await debuggerSetupPromise;
+                }
+
                 await new Promise(r => setTimeout(r, 1500)); // delayMs
 
                 if (i === 0) {
