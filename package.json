@@ -1,11 +1,11 @@
 {
   "name": "gjc-reversing-workbench",
-  "version": "4.2.1",
+  "version": "4.2.2",
   "description": "GJC Reverse Engineering Workbench",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --publish never"
+    "dist": "node -c main.js && node -c renderer.js && electron-builder --publish never"
   },
   "author": "GJC Agent",
   "license": "ISC",

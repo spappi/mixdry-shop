@@ -1249,7 +1249,7 @@ ipcMain.handle('extract-multi', async (event, config) => {
                                         newAssets.push({ url: u, localPath: lp, type: 'asset' });
                                     }
                                     const newUrl = prefix + lp;
-                                    newText = newText.replace(m, `url("${newUrl}")`);
+                                    newText = newText.replace(m, 'url("' + newUrl + '")');
                                 } catch(e){}
                             });
                             return newText;
