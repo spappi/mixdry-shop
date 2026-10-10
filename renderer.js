@@ -290,3 +290,42 @@ document.getElementById('btn-copy-package').addEventListener('click', () => {
 
 // Init
 loadSettings();
+
+
+// v2 복원: 백엔드 생성 버튼 로직 (v3 업데이트 중 유실된 부분)
+document.getElementById('btn-run-scaffold').addEventListener('click', async () => {
+    const config = {
+        mallName: document.getElementById('mall-name').value,
+        adminId: document.getElementById('admin-id').value,
+        adminPw: document.getElementById('admin-pw').value,
+        outputDir: document.getElementById('output-dir').value,
+        tokens: extractedTokens && extractedTokens.tokens ? {
+            primaryColor: extractedTokens.tokens.colors[0] || '#333333', 
+            secondaryColor: extractedTokens.tokens.colors[1] || '#cccccc', 
+            backgroundColor: extractedTokens.tokens.colors.find(c => c === '#ffffff' || c === '#000000' || c === 'rgb(255, 255, 255)' || c === 'rgb(0, 0, 0)') || '#ffffff', 
+            textColor: '#000000', 
+            primaryFont: (extractedTokens.tokens.fonts && extractedTokens.tokens.fonts[0]) || 'sans-serif'
+        } : {
+            primaryColor: '#333333', secondaryColor: '#cccccc', backgroundColor: '#ffffff', textColor: '#000000', primaryFont: 'sans-serif'
+        }
+    };
+    
+    document.getElementById('btn-open-scaffold-folder').style.display = 'none';
+    appendLog(`백엔드 스캐폴딩 시작: ${config.mallName}...`);
+    document.getElementById('scaffold-result').textContent = '프로젝트 생성 중...';
+    
+    try {
+        const res = await window.api.scaffoldBackend(config);
+        appendLog(res.message, 'info');
+        document.getElementById('scaffold-result').textContent = '생성 완료!
+경로: ' + config.outputDir;
+        
+        lastScaffoldPath = config.outputDir;
+        const openBtn = document.getElementById('btn-open-scaffold-folder');
+        openBtn.style.display = 'inline-block';
+        openBtn.onclick = () => window.api.openFolder(lastScaffoldPath);
+    } catch (err) {
+        appendLog(`생성 오류: ${err.message}`, 'error');
+        document.getElementById('scaffold-result').textContent = '오류 발생';
+    }
+});
