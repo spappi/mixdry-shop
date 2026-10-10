@@ -145,6 +145,10 @@ ipcMain.handle('open-folder', async (event, folderPath) => {
     shell.showItemInFolder(folderPath);
 });
 
+ipcMain.handle('open-clone', async (event, folderPath) => {
+    shell.openPath(path.join(folderPath, 'index.html'));
+});
+
 // v2 extraction logic (with v3 screenshot addition)
 ipcMain.handle('extract-frontend', async (event, config) => {
     const { url, outDirBase } = config;
@@ -270,8 +274,6 @@ ipcMain.handle('extract-frontend', async (event, config) => {
 
         sendLog('레이아웃 구조 및 에셋 매핑 완료...');
         
-        if (offscreenWindow && !offscreenWindow.isDestroyed()) offscreenWindow.destroy();
-
         fs.writeFileSync(path.join(outDir, 'index.html'), '<!DOCTYPE html>\n<html>\n' + pageData.html + '\n</html>');
         
         sendLog(`총 ${pageData.assetUrls.length}개 에셋/CSS 다운로드 시작... (동시성 5 제한)`);
@@ -315,7 +317,7 @@ ipcMain.handle('extract-frontend', async (event, config) => {
         return { 
             success: true, 
             message: `[추출 완료] ${url} 구조 분석 및 클론 성공`, 
-            data: { ...pageData.tokens, assets, failedAssets, clonePath: outDir }
+            data: { ...pageData, assets, failedAssets, clonePath: outDir }
         };
     } catch (error) {
         if (offscreenWindow && !offscreenWindow.isDestroyed()) offscreenWindow.destroy();

@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('api', {
     setZoom: (factor) => webFrame.setZoomFactor(factor),
     onLog: (callback) => ipcRenderer.on('log', (event, msg, type) => callback(msg, type)),
     openFolder: (folderPath) => ipcRenderer.invoke('open-folder', folderPath),
+    openClone: (folderPath) => ipcRenderer.invoke('open-clone', folderPath),
     
     // v3 additions
     getDbPath: () => ipcRenderer.invoke('get-db-path'),
