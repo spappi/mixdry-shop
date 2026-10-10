@@ -299,7 +299,6 @@ if (btnOpenApiSpec) {
             btnExtractMulti.textContent = '수집된 페이지 추출 시작';
         }
     });
-}
 
 
 // v3: 패턴 등록 모달 처리
