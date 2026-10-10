@@ -54,31 +54,13 @@
                 <div id="analyze-summary" style="font-size: 13px; margin-bottom: 10px; line-height: 1.5;"></div>
                 <button class="primary-btn open-folder-btn" id="btn-open-api-spec" style="background-color: #ff9800; display: inline-block; margin-bottom: 10px;">API 스펙 파일 열기</button>
             </div>
-            <!-- v3.3 Multi-page options -->
-            <div style="margin-top: 10px; margin-bottom: 10px;">
-                <label style="cursor: pointer; font-weight: bold; color: var(--accent-color);">
-                    <input type="checkbox" id="chk-multipage"> 멀티페이지 전체 추출 (베타)
+            <div id="crawl-plan-panel" style="display: none; background: #1a1a1a; padding: 15px; margin-bottom: 15px; border-radius: 5px; border: 1px solid #4CAF50;">
+                <h4 style="margin-top: 0; color: #4CAF50;">수집 계획 (Smart Scope)</h4>
+                <div id="crawl-plan-summary" style="font-size: 13px; line-height: 1.5; margin-bottom: 10px;"></div>
+                <label style="cursor: pointer; font-size: 13px; color: var(--accent-color);">
+                    <input type="checkbox" id="chk-nav-only"> 메뉴 링크만 따라가기 (본문 링크 제외)
                 </label>
             </div>
-            <div id="multi-settings" style="display: none; background: #1a1a1a; padding: 15px; margin-bottom: 15px; border-radius: 5px; border: 1px solid #444;">
-                <div style="display: flex; gap: 10px; margin-bottom: 10px;">
-                    <div class="form-group" style="flex: 1; margin: 0;">
-                        <label>크롤 깊이 (maxDepth)</label>
-                        <input type="number" id="inp-depth" value="2" min="0" max="5">
-                    </div>
-                    <div class="form-group" style="flex: 1; margin: 0;">
-                        <label>최대 페이지 (maxPages)</label>
-                        <input type="number" id="inp-maxpages" value="100">
-                    </div>
-                </div>
-                <div class="form-group" style="margin-bottom: 10px;">
-                    <label>제외 패턴 (포함 시 무시, 콤마 구분)</label>
-                    <input type="text" id="inp-exclude" value="login, cart, member, mymenu, my_group, mypage, auth, board_style=view, write">
-                </div>
-                <div class="form-group" style="margin: 0;">
-                    <label>URL 파라미터 무시 (정규화용, 콤마 구분)</label>
-                    <input type="text" id="inp-param-ignore" value="timeKey">
-                </div>
                 <button id="btn-crawl" class="primary-btn" style="margin-top: 15px; background: #2196F3;">링크 수집</button>
                 <div id="crawl-results" style="display: none; margin-top: 15px; padding: 15px; background: #2a2a2a; border-left: 4px solid #4CAF50; border-radius: 4px;">
                     <p id="crawl-status" style="font-weight: bold; margin-top: 0; color: #fff;"></p>
@@ -172,6 +154,26 @@
         <div class="form-group">
             <label>기본 Admin ID</label>
             <input type="text" id="def-admin-id" value="admin">
+        </div>
+        <hr style="border-color: #444; margin: 15px 0;">
+        <h4 style="margin-bottom: 10px; color: var(--accent-color);">고급 크롤 설정</h4>
+        <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+            <div class="form-group" style="flex: 1; margin: 0;">
+                <label>크롤 깊이 (maxDepth)</label>
+                <input type="number" id="inp-depth" value="2" min="0" max="5">
+            </div>
+            <div class="form-group" style="flex: 1; margin: 0;">
+                <label>최대 페이지 (maxPages)</label>
+                <input type="number" id="inp-maxpages" value="500">
+            </div>
+        </div>
+        <div class="form-group" style="margin-bottom: 10px;">
+            <label>제외 패턴 (포함 시 무시, 콤마 구분)</label>
+            <input type="text" id="inp-exclude" value="login, cart, member, mymenu, my_group, mypage, auth, board_style=view, write">
+        </div>
+        <div class="form-group" style="margin: 0;">
+            <label>URL 파라미터 무시 (정규화용, 콤마 구분)</label>
+            <input type="text" id="inp-param-ignore" value="timeKey">
         </div>
         <div class="modal-actions">
             <button class="icon-btn" id="btn-save-settings">저장 및 닫기</button>

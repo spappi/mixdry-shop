@@ -26,6 +26,10 @@ const loadSettings = async () => {
     document.getElementById('def-mall-name').value = mallName;
     document.getElementById('def-admin-id').value = adminId;
     document.getElementById('mall-name').value = mallName;
+    if(s.crawlMaxDepth) document.getElementById('inp-depth').value = s.crawlMaxDepth;
+    if(s.crawlMaxPages) document.getElementById('inp-maxpages').value = s.crawlMaxPages;
+    if(s.crawlExclude) document.getElementById('inp-exclude').value = s.crawlExclude;
+    if(s.crawlParamIgnore) document.getElementById('inp-param-ignore').value = s.crawlParamIgnore;
     document.getElementById('admin-id').value = adminId;
 
     // Init DB
@@ -43,7 +47,11 @@ const saveSettings = async () => {
         outputDir: document.getElementById('output-dir').value,
         patternDbPath: document.getElementById('pattern-db-path').value,
         defMallName: document.getElementById('def-mall-name').value,
-        defAdminId: document.getElementById('def-admin-id').value
+        defAdminId: document.getElementById('def-admin-id').value,
+        crawlMaxDepth: document.getElementById('inp-depth').value,
+        crawlMaxPages: document.getElementById('inp-maxpages').value,
+        crawlExclude: document.getElementById('inp-exclude').value,
+        crawlParamIgnore: document.getElementById('inp-param-ignore').value
     };
     localStorage.setItem('gjc-wb-settings', JSON.stringify(s));
     window.api.setZoom(s.zoom / 100);
@@ -112,7 +120,45 @@ const btnAnalyze = document.getElementById('btn-analyze-site');
 const analyzePanel = document.getElementById('analyze-result-panel');
 const analyzeSummary = document.getElementById('analyze-summary');
 const btnOpenApiSpec = document.getElementById('btn-open-api-spec');
+const crawlPlanPanel = document.getElementById('crawl-plan-panel');
+const crawlPlanSummary = document.getElementById('crawl-plan-summary');
+const chkNavOnly = document.getElementById('chk-nav-only');
+const btnCrawl = document.getElementById('btn-crawl');
+const btnExtractMulti = document.getElementById('btn-extract-multi');
+const crawlResults = document.getElementById('crawl-results');
+const crawlStatus = document.getElementById('crawl-status');
+
 let lastApiSpecPath = null;
+let lastCrawlPlan = null;
+let collectedUrls = [];
+
+function getEffectiveCrawlConfig() {
+    const defaultExclude = document.getElementById('inp-exclude').value.split(',').map(s=>s.trim()).filter(Boolean);
+    const defaultParamIgnore = document.getElementById('inp-param-ignore').value.split(',').map(s=>s.trim()).filter(Boolean);
+    const defaultDepth = parseInt(document.getElementById('inp-depth').value) || 2;
+    const defaultPages = parseInt(document.getElementById('inp-maxpages').value) || 500;
+    const isNavOnly = chkNavOnly && chkNavOnly.checked;
+
+    if (lastCrawlPlan) {
+        return {
+            maxDepth: lastCrawlPlan.maxDepth !== undefined ? lastCrawlPlan.maxDepth : defaultDepth,
+            maxPages: lastCrawlPlan.maxPages || defaultPages,
+            excludePatterns: lastCrawlPlan.excludePatterns || defaultExclude,
+            paramBlacklist: lastCrawlPlan.paramBlacklist || defaultParamIgnore,
+            discoveryScope: isNavOnly ? 'nav' : 'all',
+            sitemapUrls: lastCrawlPlan.sitemapUrls || []
+        };
+    }
+    
+    return {
+        maxDepth: defaultDepth,
+        maxPages: defaultPages,
+        excludePatterns: defaultExclude,
+        paramBlacklist: defaultParamIgnore,
+        discoveryScope: isNavOnly ? 'nav' : 'all',
+        sitemapUrls: []
+    };
+}
 
 if (btnAnalyze) {
     btnAnalyze.addEventListener('click', async () => {
@@ -139,14 +185,17 @@ if (btnAnalyze) {
                 lastApiSpecPath = res.apiSpecPath;
                 appendLog(`[분석 완료] API 스펙 생성 완료: ${res.apiSpecPath}`, 'info');
                 
-                document.getElementById('chk-multipage').checked = true;
-                document.getElementById('multi-settings').style.display = 'block';
-                document.getElementById('btn-run-extract').style.display = 'none';
-                
-                if (p.crawlConfig) {
-                    if (p.crawlConfig.maxDepth) document.getElementById('inp-depth').value = p.crawlConfig.maxDepth;
-                    if (p.crawlConfig.maxPages) document.getElementById('inp-maxpages').value = p.crawlConfig.maxPages;
-                    if (p.crawlConfig.excludePatterns) document.getElementById('inp-exclude').value = p.crawlConfig.excludePatterns.join(', ');
+                lastCrawlPlan = p.crawlConfig || null;
+                if (lastCrawlPlan) {
+                    if (crawlPlanPanel) crawlPlanPanel.style.display = 'block';
+                    if (crawlPlanSummary) {
+                        crawlPlanSummary.innerHTML = `
+                            - 깊이 ${lastCrawlPlan.maxDepth} · 최대 ${lastCrawlPlan.maxPages}페이지 수집<br>
+                            - 사이트맵 감지: ${lastCrawlPlan.sitemapUrls && lastCrawlPlan.sitemapUrls.length > 0 ? lastCrawlPlan.sitemapUrls.length + '개 시드 적용' : '없음'}<br>
+                            - 제외 패턴: ${lastCrawlPlan.excludePatterns.join(', ')}<br>
+                            - 파라미터 정규화: ${lastCrawlPlan.paramBlacklist.join(', ')}
+                        `;
+                    }
                 }
             } else {
                 analyzeSummary.innerHTML = `<span style="color:red;">분석 실패: ${res.message}</span>`;
@@ -168,25 +217,10 @@ if (btnOpenApiSpec) {
     });
 }
 
-const chkMulti = document.getElementById('chk-multipage');
-const multiSettings = document.getElementById('multi-settings');
-const btnExtractSingle = document.getElementById('btn-run-extract');
-const btnCrawl = document.getElementById('btn-crawl');
-const btnExtractMulti = document.getElementById('btn-extract-multi');
-const crawlResults = document.getElementById('crawl-results');
-const crawlStatus = document.getElementById('crawl-status');
-
-let collectedUrls = [];
-
-if (chkMulti) {
-    chkMulti.addEventListener('change', (e) => {
-        if (e.target.checked) {
-            multiSettings.style.display = 'block';
-            btnExtractSingle.style.display = 'none';
-        } else {
-            multiSettings.style.display = 'none';
-            btnExtractSingle.style.display = 'inline-block';
-        }
+    document.getElementById('extract-url').addEventListener('input', () => {
+        lastCrawlPlan = null;
+        if (crawlPlanPanel) crawlPlanPanel.style.display = 'none';
+        if (crawlResults) crawlResults.style.display = 'none';
     });
 
     btnCrawl.addEventListener('click', async () => {
@@ -195,15 +229,9 @@ if (chkMulti) {
         
         btnCrawl.disabled = true;
         btnCrawl.textContent = '수집 중...';
-        appendLog(`멀티페이지 링크 수집 시작: ${url}...`);
+        appendLog(`링크 수집 시작: ${url}...`);
         
-        const config = {
-            url,
-            maxDepth: parseInt(document.getElementById('inp-depth').value) || 2,
-            maxPages: parseInt(document.getElementById('inp-maxpages').value) || 100,
-            excludePatterns: document.getElementById('inp-exclude').value.split(',').map(s=>s.trim()).filter(Boolean),
-            paramBlacklist: document.getElementById('inp-param-ignore').value.split(',').map(s=>s.trim()).filter(Boolean)
-        };
+        const config = { url, ...getEffectiveCrawlConfig() };
 
         try {
             const res = await window.api.crawlLinks(config);
@@ -231,7 +259,7 @@ if (chkMulti) {
         const config = {
             urls: collectedUrls,
             outDirBase: document.getElementById('output-dir').value,
-            paramBlacklist: document.getElementById('inp-param-ignore').value.split(',').map(s=>s.trim()).filter(Boolean)
+            paramBlacklist: getEffectiveCrawlConfig().paramBlacklist
         };
 
         appendLog(`멀티페이지 순차 추출 시작 (${collectedUrls.length}개 페이지)...`);
@@ -258,6 +286,7 @@ if (chkMulti) {
                     document.getElementById('btn-open-clone-folder').style.display = 'inline-block';
                     document.getElementById('btn-open-clone-folder').onclick = () => window.api.openFolder(lastExtractPath);
                     document.getElementById('btn-run-clone').style.display = 'inline-block';
+                    document.getElementById('btn-open-pattern-modal').style.display = 'inline-block';
                     document.getElementById('btn-run-clone').onclick = () => window.api.openClone(lastExtractPath);
                 }
             } else {

@@ -647,7 +647,7 @@ app.listen(PORT, () => {
 });
 // v3.3: Multi-page Support (Crawl Links)
 ipcMain.handle('crawl-links', async (event, config) => {
-    const { url, maxDepth, maxPages, excludePatterns, paramBlacklist } = config;
+    const { url, maxDepth, maxPages, excludePatterns, paramBlacklist, discoveryScope } = config;
     let offscreenWindow = null;
     const sendLog = (msg, type='info') => event.sender.send('log', msg, type);
 
@@ -663,6 +663,13 @@ ipcMain.handle('crawl-links', async (event, config) => {
                 const u = new URL(href, base);
                 u.hash = '';
                 paramBlacklist.forEach(p => u.searchParams.delete(p.trim()));
+                
+                const keys = Array.from(u.searchParams.keys());
+                keys.forEach(k => {
+                    if (u.searchParams.get(k) === '') u.searchParams.delete(k);
+                });
+                u.searchParams.sort();
+                
                 let s = u.toString();
                 if (s.endsWith('/') && s.length > u.origin.length + 1) s = s.slice(0, -1);
                 return s;
@@ -685,6 +692,14 @@ ipcMain.handle('crawl-links', async (event, config) => {
         const queue = [{ url: startNormalized, depth: 0 }];
         const visited = new Set([startNormalized]);
         const results = [{ url: startNormalized, depth: 0 }];
+        
+        const fanOutMap = new Map();
+        const excludedStats = [];
+        const recordExcluded = (reason, pattern) => {
+            const stat = excludedStats.find(s => s.pattern === pattern);
+            if (stat) stat.count++;
+            else excludedStats.push({ reason, pattern, count: 1 });
+        };
 
         while (queue.length > 0 && visited.size < maxPages) {
             const current = queue.shift();
@@ -700,32 +715,66 @@ ipcMain.handle('crawl-links', async (event, config) => {
             
             if (current.depth >= maxDepth) continue;
 
+            const selector = discoveryScope === 'nav' ? 'nav a, header a, footer a' : 'a';
             const hrefs = await offscreenWindow.webContents.executeJavaScript(`
-                Array.from(document.querySelectorAll('a')).map(a => a.href).filter(h => h && !h.startsWith('javascript:'))
+                Array.from(document.querySelectorAll('${selector}')).map(a => a.href).filter(h => h && !h.startsWith('javascript:'))
             `);
 
             for (const href of hrefs) {
                 const norm = normalizeUrl(href, current.url);
                 if (!norm) continue;
+                
+                let parsed;
                 try {
-                    const parsed = new URL(norm);
+                    parsed = new URL(norm);
                     const baseParsed = new URL(url);
                     if (parsed.origin !== baseParsed.origin) continue; // sameOriginOnly
                 } catch(e) { continue; }
 
-                if (isExcluded(norm)) continue;
+                if (isExcluded(norm)) {
+                    const extMatch = norm.match(/\.([a-z0-9]+)(?:[\?#]|$)/);
+                    if (extMatch && ['pdf', 'zip', 'rar', 'exe', 'png', 'jpg', 'jpeg', 'gif', 'svg'].includes(extMatch[1])) {
+                        recordExcluded('확장자 제외', extMatch[1]);
+                    } else {
+                        recordExcluded('제외 패턴 매칭', norm.split('?')[0]);
+                    }
+                    continue;
+                }
+
+                // Fan-out detection
+                const paramKeys = Array.from(parsed.searchParams.keys()).sort().join(',');
+                const pathKey = parsed.pathname + (paramKeys ? '?' + paramKeys : '');
+                
+                if (!fanOutMap.has(pathKey)) fanOutMap.set(pathKey, new Set());
+                const pathSet = fanOutMap.get(pathKey);
+                pathSet.add(norm);
+                
+                if (pathSet.size > 100) {
+                    recordExcluded('Fan-out 자동 차단 (게시판/상품 무한증식 방지)', pathKey);
+                    continue;
+                }
 
                 if (!visited.has(norm)) {
                     visited.add(norm);
                     results.push({ url: norm, depth: current.depth + 1 });
                     queue.push({ url: norm, depth: current.depth + 1 });
-                    if (visited.size >= maxPages) break;
+                    if (visited.size >= maxPages) {
+                        sendLog(`⚠️ 최대 페이지 상한(${maxPages}개) 도달 — 전체 수집이 아닐 수 있음`, 'warn');
+                        break;
+                    }
                 }
             }
         }
 
-        sendLog(`링크 수집 완료: 총 ${results.length}개 페이지 발견.`);
-        return { success: true, data: results };
+        if (visited.size < maxPages) {
+            sendLog(`전체 ${results.length}개 고유 URL 수집 완료.`);
+        }
+        
+        excludedStats.forEach(s => {
+            sendLog(`[제외] ${s.reason}: ${s.pattern} (${s.count}건)`);
+        });
+
+        return { success: true, data: results, excludedStats };
     } catch (e) {
         return { success: false, message: e.message };
     } finally {
@@ -873,7 +922,20 @@ ipcMain.handle('analyze-site', async (event, config) => {
         const apiSpecPath = path.join(outDir, 'api-spec.json');
         fs.writeFileSync(apiSpecPath, JSON.stringify(openApiSpec, null, 2));
 
-        // 2. Extract heuristic profile
+        // 2. Sitemap Fetching
+        const sitemapUrls = [];
+        try {
+            const sitemapRes = await fetch(`${url}/sitemap.xml`, { signal: AbortSignal.timeout(10000) });
+            if (sitemapRes.ok) {
+                const xmlText = await sitemapRes.text();
+                const matches = xmlText.match(/<loc>(.*?)<\/?loc>/g);
+                if (matches) {
+                    matches.forEach(m => sitemapUrls.push(m.replace(/<\/?loc>/g, '').trim()));
+                }
+            }
+        } catch(e) {}
+
+        // 3. Extract heuristic profile
         const profile = await offscreenWindow.webContents.executeJavaScript(`
             (() => {
                 const p = {
@@ -885,8 +947,10 @@ ipcMain.handle('analyze-site', async (event, config) => {
                     apiCount: ${apiTraffic.length},
                     crawlConfig: {
                         maxDepth: 2,
-                        maxPages: 50,
-                        excludePatterns: ['login', 'cart', 'member', 'mymenu', 'my_group', 'mypage', 'auth', 'board_style=view', 'write']
+                        maxPages: 500,
+                        excludePatterns: ['login', 'cart', 'member', 'mymenu', 'my_group', 'mypage', 'auth', 'board_style=view', 'write'],
+                        paramBlacklist: [],
+                        sitemapUrls: ${JSON.stringify(sitemapUrls)}
                     }
                 };
 
@@ -909,20 +973,57 @@ ipcMain.handle('analyze-site', async (event, config) => {
                 const uniqueLinks = [...new Set(allLinks)];
                 p.pageEstimate = Math.max(10, uniqueLinks.length * 3);
 
-                const patterns = new Set();
+                const trackParams = ['utm_source', 'utm_medium', 'utm_campaign', 'timeKey', 'sessionid', 'PHPSESSID', 'fbclid', 'gclid'];
+                const detectedParams = new Set();
+                uniqueLinks.forEach(l => {
+                    try {
+                        const u = new URL(l);
+                        for (const key of u.searchParams.keys()) {
+                            if (trackParams.includes(key) || key.startsWith('utm_')) {
+                                detectedParams.add(key);
+                            }
+                        }
+                    } catch(e){}
+                });
+                p.crawlConfig.paramBlacklist = Array.from(detectedParams);
+
+                const patterns = {};
                 uniqueLinks.forEach(l => {
                     try {
                         const u = new URL(l);
                         if (u.origin === window.location.origin) {
-                            patterns.add(u.pathname.split('/').slice(0, 2).join('/'));
+                            const pt = u.pathname.split('/').slice(0, 2).join('/');
+                            patterns[pt] = (patterns[pt] || 0) + 1;
                         }
                     } catch(e){}
                 });
-                p.urlPatterns = Array.from(patterns).filter(Boolean).slice(0, 10);
+                
+                const sortedPatterns = Object.entries(patterns).sort((a,b) => b[1] - a[1]);
+                p.urlPatterns = sortedPatterns.slice(0, 10).map(x => x[0]).filter(Boolean);
 
                 if (p.urlPatterns.some(pt => pt.includes('board') || pt.includes('bbs') || pt.includes('forum'))) {
                     p.siteType = 'board-heavy';
+                    p.crawlConfig.maxDepth = 2;
+                } else if (p.urlPatterns.some(pt => pt.includes('product') || pt.includes('goods') || pt.includes('item'))) {
+                    p.siteType = 'catalog';
+                    p.crawlConfig.maxDepth = 2;
+                } else if (p.urlPatterns.some(pt => pt.includes('blog') || pt.includes('post') || pt.includes('article'))) {
+                    p.siteType = 'blog';
+                    p.crawlConfig.maxDepth = 1;
+                } else if (uniqueLinks.length < 5) {
+                    p.siteType = 'single-landing';
+                    p.crawlConfig.maxDepth = 0;
                 }
+
+                sortedPatterns.forEach(([pt, count]) => {
+                    if (count > uniqueLinks.length * 0.3) {
+                        if (pt.includes('board') || pt.includes('view') || pt.includes('article')) {
+                            if (!p.crawlConfig.excludePatterns.includes(pt)) {
+                                p.crawlConfig.excludePatterns.push(pt);
+                            }
+                        }
+                    }
+                });
 
                 return p;
             })();
@@ -1008,16 +1109,19 @@ ipcMain.handle('extract-multi', async (event, config) => {
                             if (method === 'Network.requestWillBeSent') {
                                 reqOriginalUrl.set(params.requestId, params.request.url);
                             } else if (method === 'Network.responseReceived') {
-                                reqFinalUrl.set(params.requestId, params.response.url);
+                                reqFinalUrl.set(params.requestId, { url: params.response.url, mimeType: params.response.mimeType });
                             } else if (method === 'Network.loadingFinished') {
                                 const requestId = params.requestId;
-                                const u_arr = [reqOriginalUrl.get(requestId), reqFinalUrl.get(requestId)].filter(Boolean);
+                                const original = reqOriginalUrl.get(requestId);
+                                const finalObj = reqFinalUrl.get(requestId);
+                                const u_arr = [original, finalObj ? finalObj.url : null].filter(Boolean);
                                 try {
                                     const { body, base64Encoded } = await offscreenWindow.webContents.debugger.sendCommand(
                                         'Network.getResponseBody', { requestId }
                                     );
                                     const buf = base64Encoded ? Buffer.from(body, 'base64') : Buffer.from(body, 'utf8');
-                                    for (const u of u_arr) capturedBodies.set(u, buf);
+                                    const mimeType = finalObj ? finalObj.mimeType : '';
+                                    for (const u of u_arr) capturedBodies.set(u, { buf, mimeType });
                                 } catch (err) {}
                                 reqOriginalUrl.delete(requestId);
                                 reqFinalUrl.delete(requestId);
@@ -1039,7 +1143,8 @@ ipcMain.handle('extract-multi', async (event, config) => {
         let nextImgId = 0;
         let nextInlineId = 0;
 
-        const manifest = { targetUrl: urls[0].url, extractedAt: new Date().toISOString(), pages: [], failedPages: [], assets: [] };
+        const manifest = { targetUrl: urls[0].url, extractedAt: new Date().toISOString(), pages: [], failedPages: [], assets: [], duplicatePages: [] };
+        const contentHashes = new Map();
 
         for (let i = 0; i < urls.length; i++) {
             const currentUrl = urls[i].url;
@@ -1112,6 +1217,8 @@ ipcMain.handle('extract-multi', async (event, config) => {
                         });
 
                         document.querySelectorAll('img, source').forEach(el => {
+                            const rawSrc = el.getAttribute('src');
+                            if (!rawSrc || rawSrc.trim() === '') return;
                             if (el.src && !el.src.startsWith('data:')) {
                                 let lp = globalImgMap[el.src];
                                 if (!lp) {
@@ -1125,9 +1232,38 @@ ipcMain.handle('extract-multi', async (event, config) => {
                             if (el.srcset) el.removeAttribute('srcset');
                         });
 
+                        const parseCssUrls = (text, isInline) => {
+                            const matches = text.match(/url\(['"]?(.*?)['"]?\)/g);
+                            if (!matches) return text;
+                            let newText = text;
+                            matches.forEach(m => {
+                                const inner = m.replace(/url\(['"]?/, '').replace(/['"]?\)/, '').trim();
+                                if (!inner || inner.startsWith('data:')) return;
+                                try {
+                                    const u = new URL(inner, window.location.href).toString();
+                                    let lp = globalImgMap[u];
+                                    if (!lp) {
+                                        const ext = u.split('.').pop().split('?')[0] || 'png';
+                                        const safeExt = /^[a-zA-Z0-9]+$/.test(ext) ? ext : 'png';
+                                        lp = 'assets/img-' + (nextImgId++) + '.' + safeExt;
+                                        newAssets.push({ url: u, localPath: lp, type: 'asset' });
+                                    }
+                                    const newUrl = prefix + lp;
+                                    newText = newText.replace(m, `url("${newUrl}")`);
+                                } catch(e){}
+                            });
+                            return newText;
+                        };
+
+                        document.querySelectorAll('*[style]').forEach(el => {
+                            const newStyle = parseCssUrls(el.getAttribute('style'), true);
+                            if (newStyle !== el.getAttribute('style')) el.setAttribute('style', newStyle);
+                        });
+
                         document.querySelectorAll('style').forEach(el => {
+                            const parsedCss = parseCssUrls(el.innerHTML, false);
                             const lp = 'css/inline-' + (nextInlineId++) + '.css';
-                            newAssets.push({ text: el.innerHTML, localPath: lp, type: 'inline-css' });
+                            newAssets.push({ text: parsedCss, localPath: lp, type: 'inline-css' });
                             const link = document.createElement('link');
                             link.rel = 'stylesheet';
                             link.href = prefix + lp;
@@ -1141,9 +1277,30 @@ ipcMain.handle('extract-multi', async (event, config) => {
                         while(node = iter.nextNode()) comments.push(node);
                         comments.forEach(c => c.remove());
 
+                        let tokens = null, layout = null, components = null;
+                        if (currentLocalPath === 'index.html') {
+                            const colorMap = {};
+                            const fonts = new Set();
+                            document.querySelectorAll('*').forEach(el => {
+                                const s = window.getComputedStyle(el);
+                                const bg = s.backgroundColor;
+                                if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') colorMap[bg] = (colorMap[bg] || 0) + 1;
+                                const c = s.color;
+                                if (c && c !== 'rgba(0, 0, 0, 0)' && c !== 'transparent') colorMap[c] = (colorMap[c] || 0) + 1;
+                                if (s.fontFamily) fonts.add(s.fontFamily.split(',')[0].replace(/['"]/g, '').trim());
+                            });
+                            tokens = {
+                                colors: Object.entries(colorMap).sort((a,b)=>b[1]-a[1]).map(e=>e[0]).slice(0,10),
+                                fonts: Array.from(fonts)
+                            };
+                            layout = { sections: [] };
+                            components = [];
+                        }
+
                         return {
                             html: document.documentElement.outerHTML,
-                            newAssets,
+                            textContent: document.body ? document.body.innerText.replace(/\s+/g, ' ').toLowerCase() : '',
+                            newAssets, tokens, layout, components,
                             nextCssId, nextImgId, nextInlineId
                         };
                     })();
@@ -1152,6 +1309,16 @@ ipcMain.handle('extract-multi', async (event, config) => {
                 nextCssId = pageData.nextCssId;
                 nextImgId = pageData.nextImgId;
                 nextInlineId = pageData.nextInlineId;
+                
+                const crypto = require('crypto');
+                const hash = crypto.createHash('sha256').update(pageData.textContent).digest('hex');
+                if (contentHashes.has(hash)) {
+                    sendLog(`[콘텐츠 중복 제외] ${currentUrl}`);
+                    manifest.duplicatePages.push(currentUrl);
+                    urlMap[currentUrl] = contentHashes.get(hash);
+                    continue; 
+                }
+                contentHashes.set(hash, localPath);
 
                 for (const item of pageData.newAssets) {
                     if (item.type === 'css') globalCssMap[item.url] = item.localPath;
@@ -1161,10 +1328,16 @@ ipcMain.handle('extract-multi', async (event, config) => {
                         if (item.type === 'inline-css') {
                             fs.writeFileSync(path.join(outDir, item.localPath), item.text);
                         } else {
-                            const buf = capturedBodies.get(item.url);
-                            if (buf) {
-                                fs.writeFileSync(path.join(outDir, item.localPath), buf);
+                            const decUrl = decodeURIComponent(item.url);
+                            let bodyData = capturedBodies.get(item.url) || capturedBodies.get(decUrl);
+                            if (bodyData) {
+                                if (bodyData.mimeType && bodyData.mimeType.includes('text/html')) {
+                                    sendLog(`[MIME 불일치] ${item.url} (text/html)`);
+                                    continue;
+                                }
+                                fs.writeFileSync(path.join(outDir, item.localPath), bodyData.buf);
                                 capturedBodies.delete(item.url); 
+                                capturedBodies.delete(decUrl);
                             } else {
                                 sendLog(`[에셋 바디 없음] ${item.url}`, 'error');
                             }
@@ -1177,13 +1350,18 @@ ipcMain.handle('extract-multi', async (event, config) => {
 
                 fs.writeFileSync(path.join(outDir, localPath), '<!DOCTYPE html>\n<html>\n' + pageData.html + '\n</html>');
                 manifest.pages.push(currentUrl);
-
+                
+                if (i === 0) {
+                    manifest.tokens = pageData.tokens;
+                    manifest.layout = pageData.layout;
+                    manifest.components = pageData.components;
+                }
             } catch (e) {
                 sendLog(`[페이지 실패] ${currentUrl} - ${e.message}`, 'error');
                 manifest.failedPages.push({ url: currentUrl, error: e.message });
             }
         }
-
+        fs.writeFileSync(path.join(outDir, 'urlmap.json'), JSON.stringify(urlMap, null, 2));
         fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
         fs.writeFileSync(path.join(outDir, 'README.md'), `# Multi-page Clone of ${domain}\n\nOpen \`index.html\` to view the cloned structure.\n\nTotal pages: ${manifest.pages.length}`);
 
@@ -1192,7 +1370,7 @@ ipcMain.handle('extract-multi', async (event, config) => {
         return { 
             success: true, 
             message: `[완료] 총 ${manifest.pages.length}페이지 클론 성공`, 
-            data: { clonePath: outDir, assets: manifest.assets } 
+            data: { clonePath: outDir, assets: manifest.assets, tokens: manifest.tokens, layout: manifest.layout, components: manifest.components } 
         };
     } catch (error) {
         return { success: false, message: error.message };
