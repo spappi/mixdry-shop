@@ -10,6 +10,7 @@ function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1100,
         height: 850,
+        title: `GJC 리버싱 워크벤치 v${app.getVersion()}`,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             nodeIntegration: false,
